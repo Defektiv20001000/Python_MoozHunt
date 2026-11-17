@@ -1,0 +1,6 @@
+librosa
+numpy
+pygame-ce
+torch
+transformers
+yt-dlp

@@ -6,8 +6,7 @@ ffprobe.exe
 # Пользовательские данные и временные папки
 songs/
 songs_temporary/
-deleated/
-music_vault.db
+deleated
 
 # Системный мусор и кэш Python
 __pycache__/
