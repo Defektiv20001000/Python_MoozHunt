@@ -1,0 +1,16 @@
+# Тяжелые модели и бинарники
+clap-ai/
+ffmpeg.exe
+ffprobe.exe
+
+# Пользовательские данные и временные папки
+songs/
+songs_temporary/
+deleated/
+music_vault.db
+
+# Системный мусор и кэш Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
