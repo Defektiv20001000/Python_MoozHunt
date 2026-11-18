@@ -1,8 +1,11 @@
-import os, queue, sqlite3
+import os, queue, sqlite3, sys
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(BASE_DIR, "music_vault.db")
 STORAGE_DIR = os.path.join(BASE_DIR, "songs")
 

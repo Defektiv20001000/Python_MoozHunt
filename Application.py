@@ -1,10 +1,10 @@
 import os, queue, random, shutil, sys
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import DataBase
 from ui_scripts import (
-    ACCENT_BLUE, AimpIconButton, AppStorage, AudioPlayer, BG_HEADER, BG_MAIN,
+    ACCENT_BLUE, AimpIconButton, AppStorage, BG_HEADER, BG_MAIN,
     BG_PANEL, BORDER_COLOR, DOWNLOAD_POLL_MS, GENRE_PLACEHOLDER, PlayerPanel,
     SEARCH_DELAY_MS, TEXT_MAIN, TEXT_MUTED, TOP_LOGO_SIZE,
     create_scrollbar_tree, make_button, make_section_frame,
@@ -12,10 +12,13 @@ from ui_scripts import (
     open_rename_playlist_dialog, open_report_dialog, playlists, setup_styles
 )
 
-
+def get_app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
 
 class MusicAppInterface:
-    def __init__(self, root):
+    def __init__(self, root, startup_files=None):
         self.root = root
         self.root.title("MuzHunt")
         try:
@@ -27,7 +30,7 @@ class MusicAppInterface:
         self.root.minsize(self.s(700), self.s(700))
         self.root.configure(bg=BG_MAIN)
 
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.base_dir = get_app_dir()
         self.storage = AppStorage(self.base_dir)
 
         self._search_job = None
@@ -51,6 +54,9 @@ class MusicAppInterface:
         self.refresh_playlists()
         self.poll_download_events()
         self.check_music_end()
+
+        if startup_files:
+            self.root.after(150, lambda: self.play_external_files(startup_files))
 
     def s(self, val):
         return int(round(val * self.scale))
@@ -83,6 +89,53 @@ class MusicAppInterface:
         self.storage.save_settings(self.player_panel.volume_var.get())
         self.player_panel.shutdown()
         self.root.destroy()
+
+    # --- ОТКРЫТИЕ И ИМПОРТ ЛОКАЛЬНЫХ АУДИОФАЙЛОВ ---
+    def play_external_files(self, filepaths):
+        valid = [p for p in filepaths if os.path.isfile(p) and p.lower().endswith(playlists.AUDIO_EXTENSIONS)]
+        if not valid:
+            return
+        q = []
+        for path in valid:
+            artist, title = "", os.path.splitext(os.path.basename(path))[0]
+            try:
+                from tinytag import TinyTag
+                tag = TinyTag.get(path)
+                artist = (tag.artist or "").strip()
+                if tag.title and tag.title.strip():
+                    title = tag.title.strip()
+            except Exception:
+                pass
+            q.append({
+                "link": f"local:{os.path.basename(path)}",
+                "artist": artist,
+                "title": title,
+                "file": os.path.basename(path),
+                "full_path": os.path.abspath(path),
+                "is_local": True,
+            })
+        self.player_panel.player.set_queue(q, 0)
+
+    def import_local_songs(self):
+        playlist = self.playlist_var.get()
+        if not playlist:
+            return messagebox.showinfo("Плейлист", "Сначала создайте или выберите плейлист.", parent=self.root)
+        filepaths = filedialog.askopenfilenames(
+            parent=self.root,
+            title="Добавить аудиофайлы в плейлист",
+            filetypes=[
+                ("Аудиофайлы", "*.mp3 *.wav *.flac *.ogg *.m4a"),
+                ("Все файлы", "*.*"),
+            ],
+        )
+        if not filepaths:
+            return
+        try:
+            playlists.import_files(playlist, filepaths)
+            self.load_songs_to_playlist()
+            self.update_recommendations()
+        except Exception as e:
+            messagebox.showerror("Импорт", f"Не удалось добавить файлы: {e}", parent=self.root)
 
     # --- ПЛОХОЙ СПИСОК ---
     def _update_bad_list_btn_text(self):
@@ -222,7 +275,12 @@ class MusicAppInterface:
         self.playlist_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.playlist_combo.bind("<<ComboboxSelected>>", lambda _e: (self.playlist_combo.selection_clear(), self.open_playlist()))
 
-        # Векторная кнопка редактирования плейлиста (вместо расплывчатого символа шрифта)
+        # Кнопка "+" слева от карандашика для добавления локальных аудиофайлов в плейлист
+        add_song_btn = make_button(pl_bar, "+", self.import_local_songs, self.s, width=2)
+        add_song_btn.configure(highlightthickness=1, highlightbackground=BORDER_COLOR, pady=self.s(3))
+        add_song_btn.pack(side=tk.LEFT, padx=(self.s(5), 0))
+
+        # Векторная кнопка редактирования плейлиста
         edit_btn = AimpIconButton(pl_bar, "edit", self.rename_playlist, self.s, size=26, bg=BG_HEADER)
         edit_btn.configure(highlightthickness=1, highlightbackground=BORDER_COLOR)
         edit_btn.pack(side=tk.LEFT, padx=(self.s(5), 0))
@@ -495,6 +553,7 @@ if __name__ == "__main__":
                 pass
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("musicclean.app.v1")
 
+    startup_audio = [arg for arg in sys.argv[1:] if os.path.isfile(arg)]
     root = tk.Tk()
-    MusicAppInterface(root)
+    MusicAppInterface(root, startup_files=startup_audio)
     root.mainloop()

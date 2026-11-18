@@ -1,9 +1,13 @@
+import torch, os, sys
 import librosa as lr
 import numpy as np
-import torch
 from transformers import AutoProcessor, ClapModel
 
-MODEL_NAME = "./clap-ai"
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_NAME = os.path.join(BASE_DIR, "clap-ai")
 processor = AutoProcessor.from_pretrained(MODEL_NAME)
 model = ClapModel.from_pretrained(MODEL_NAME)
 model.eval()

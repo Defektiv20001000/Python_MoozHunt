@@ -1,8 +1,11 @@
-import os, random, sqlite3, uuid, yt_dlp
+import os, random, sqlite3, uuid, yt_dlp, sys
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "music_vault.db")
-DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "songs")
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_NAME = os.path.join(BASE_DIR, "music_vault.db")
+STORAGE_DIR = os.path.join(BASE_DIR, "songs")
 
 artists_and_genres = {
     "Pop": [
