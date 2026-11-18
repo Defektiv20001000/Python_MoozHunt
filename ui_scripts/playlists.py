@@ -1,13 +1,9 @@
-import hashlib
-import json
-import os
-import random
-import re
-import shutil
-import threading
+import hashlib, json, os, random, re, shutil, threading
 from urllib.parse import urlparse
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.join(PROJECT_ROOT, "plays")
+os.makedirs(BASE_DIR, exist_ok=True)
 MANIFEST_NAME = "playlist.json"
 MAX_PARALLEL_DOWNLOADS = 2
 DOWNLOAD_TIMEOUT = 30
@@ -20,6 +16,61 @@ _FIELDS = {"url": "link", "title": "title", "artist": "artist", "genre": "genre"
 _lock = threading.RLock()
 _slots = threading.Semaphore(MAX_PARALLEL_DOWNLOADS)
 _in_progress = set()
+
+
+class AppStorage:
+    def __init__(self, base_dir=BASE_DIR):
+        self.bad_songs_file = os.path.join(base_dir, "bad_songs.json")
+        self.settings_file = os.path.join(base_dir, "app_settings.json")
+        self.bad_songs = self._load_json(self.bad_songs_file, {})
+        self.settings = self._load_settings()
+
+    def _load_json(self, path, default):
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, type(default)):
+                        return data
+            except Exception as e:
+                print(f"Ошибка загрузки {os.path.basename(path)}: {e}")
+        return default
+
+    def _save_json(self, path, data):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Ошибка сохранения {os.path.basename(path)}: {e}")
+
+    def _load_settings(self):
+        data = self._load_json(self.settings_file, {"volume": 70.0})
+        try:
+            vol = float(data.get("volume", 70.0))
+        except Exception:
+            vol = 70.0
+        data["volume"] = max(0.0, min(100.0, vol))
+        return data
+
+    def save_settings(self, volume=None):
+        if volume is not None:
+            self.settings["volume"] = round(float(volume), 2)
+        self._save_json(self.settings_file, self.settings)
+
+    def save_bad_songs(self):
+        self._save_json(self.bad_songs_file, self.bad_songs)
+
+    def add_bad_songs(self, songs):
+        changed = False
+        for link, artist, title, genre in songs:
+            if link and link not in self.bad_songs:
+                self.bad_songs[link] = {
+                    "link": link, "artist": artist or "", "title": title or "", "genre": genre or ""
+                }
+                changed = True
+        if changed:
+            self.save_bad_songs()
+        return changed
 
 
 def _safe_filename(text):
@@ -51,8 +102,7 @@ def create_playlist(name):
     name = normalize_name(name)
     for entry in os.listdir(BASE_DIR):
         if entry.lower() == name.lower():
-            msg = f"Плейлист «{name}» уже существует." if entry == name else f"В проекте уже есть папка «{entry}» (рабочая). Выберите другое название."
-            raise FileExistsError(msg)
+            raise FileExistsError(f"Плейлист «{name}» уже существует.")
     os.makedirs(os.path.join(BASE_DIR, name))
     return name
 
@@ -64,8 +114,7 @@ def rename_playlist(old_name, new_name):
         return new_name
     for entry in os.listdir(BASE_DIR):
         if entry.lower() == new_name.lower() and entry != old_name:
-            msg = f"Плейлист «{new_name}» уже существует." if entry == new_name else f"В проекте уже есть папка «{entry}» (рабочая). Выберите другое название."
-            raise FileExistsError(msg)
+            raise FileExistsError(f"Плейлист «{new_name}» уже существует.")
     with _lock:
         if any(pl == old_name for pl, _ in _in_progress):
             raise RuntimeError("Дождитесь окончания скачивания треков в этот плейлист перед переименованием.")
@@ -218,8 +267,8 @@ def _download_file(url, target_base):
         "no_warnings": True,
         "socket_timeout": DOWNLOAD_TIMEOUT,
     }
-    if any(os.path.isfile(os.path.join(BASE_DIR, n)) for n in ("ffmpeg.exe", "ffmpeg")):
-        options["ffmpeg_location"] = BASE_DIR
+    if any(os.path.isfile(os.path.join(PROJECT_ROOT, n)) for n in ("ffmpeg.exe", "ffmpeg")):
+        options["ffmpeg_location"] = PROJECT_ROOT
 
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])

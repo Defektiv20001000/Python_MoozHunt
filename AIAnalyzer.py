@@ -8,7 +8,6 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME)
 model = ClapModel.from_pretrained(MODEL_NAME)
 model.eval()
 
-
 def get_audio_embedding(file_path):
     try:
         duration = lr.get_duration(path=file_path)

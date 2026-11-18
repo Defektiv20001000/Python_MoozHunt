@@ -1,8 +1,6 @@
-import os
-import queue
-import sqlite3
-from concurrent.futures import ThreadPoolExecutor
+import os, queue, sqlite3
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(BASE_DIR, "music_vault.db")
@@ -12,7 +10,6 @@ GENRES = [
     "Pop", "Rock", "Metal", "Hip-Hop", "Electronic", "Indie",
     "Disco", "Eurodance/Dance-Pop", "Classical", "Soundtrack/Instrumental",
 ]
-
 
 def _connect():
     conn = sqlite3.connect(DB_NAME)
@@ -28,10 +25,8 @@ def _connect():
     """)
     return conn
 
-
 def _norm(value):
     return (value or "").strip().casefold()
-
 
 def clean_title(title_text):
     text = title_text or ""
@@ -45,14 +40,12 @@ def get_all_songs():
     with _connect() as conn:
         return conn.execute("SELECT link, artist, title, genre FROM songs").fetchall()
 
-
 def get_random_songs(count=20):
     with _connect() as conn:
         return conn.execute(
             "SELECT link, artist, title, genre FROM songs ORDER BY RANDOM() LIMIT ?",
             (int(count),),
         ).fetchall()
-
 
 def search_songs(title="", artist="", genre="", query="", limit=None):
     query = _norm(query)
@@ -225,4 +218,4 @@ def download_byUrl(url):
 
 
 if __name__ == "__main__":
-    load_database(4000)
+    load_database(12000)

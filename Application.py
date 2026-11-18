@@ -1,31 +1,17 @@
-import os
-import queue
-import random
-import sys
+import os, queue, random, shutil, sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import DataBase
-import Playlists
-from dialogs import open_create_playlist_dialog, open_rename_playlist_dialog, open_report_dialog
-from player import AudioPlayer
-from theme import (
-    ACCENT_BLUE, BG_HEADER, BG_MAIN, BG_PANEL, BORDER_COLOR,
-    DOWNLOAD_POLL_MS, GENRE_PLACEHOLDER, RANDOM_SONGS_COUNT,
+from ui_scripts import (
+    ACCENT_BLUE, AimpIconButton, AppStorage, AudioPlayer, BG_HEADER, BG_MAIN,
+    BG_PANEL, BORDER_COLOR, DOWNLOAD_POLL_MS, GENRE_PLACEHOLDER, PlayerPanel,
     SEARCH_DELAY_MS, TEXT_MAIN, TEXT_MUTED, TOP_LOGO_SIZE,
-    create_scrollbar_tree, make_button, make_section_frame, setup_styles
+    create_scrollbar_tree, make_button, make_section_frame,
+    open_bad_songs_dialog, open_create_playlist_dialog,
+    open_rename_playlist_dialog, open_report_dialog, playlists, setup_styles
 )
 
-
-def enable_high_dpi():
-    if sys.platform == "win32":
-        import ctypes
-        for fn in (lambda: ctypes.windll.shcore.SetProcessDpiAwareness(1), ctypes.windll.user32.SetProcessDPIAware):
-            try:
-                fn()
-                break
-            except Exception:
-                pass
 
 
 class MusicAppInterface:
@@ -37,45 +23,43 @@ class MusicAppInterface:
         except Exception:
             self.scale = 1.0
 
-        self.root.geometry(f"{self.s(1100)}x{self.s(730)}")
-        self.root.minsize(self.s(920), self.s(620))
+        self.root.geometry(f"{self.s(700)}x{self.s(700)}")
+        self.root.minsize(self.s(700), self.s(700))
         self.root.configure(bg=BG_MAIN)
 
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self._search_job = self._random_songs = None
-        self.right_songs, self.rec_songs_map, self.playlist_links, self.playlist_items_data = {}, {}, {}, {}
-        self.rec_songs = []
+        self.storage = AppStorage(self.base_dir)
+
+        self._search_job = None
+        self.right_songs, self.playlist_items_data = {}, {}
+        self.is_search_mode = False
         self._download_events = queue.Queue()
-        self.volume_var = tk.DoubleVar(value=70)
 
         self.photo_icon = self.top_logo_img = None
         self._load_logos()
         setup_styles(self.root, self.s)
 
-        self.title_var, self.artist_var, self.playlist_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.title_var = tk.StringVar()
+        self.playlist_var = tk.StringVar()
         self.genre_var = tk.StringVar(value=GENRE_PLACEHOLDER)
 
         self.create_top_bar()
         self.create_context_menu()
         self.create_main_layout()
 
-        self.player = AudioPlayer(
-            root=self.root,
-            temp_dir=os.path.join(self.base_dir, "songs_temporary"),
-            on_status=self._on_player_status,
-            on_play_state=lambda playing: self.play_btn.config(text="⏸ Пауза" if playing else "▶ Играть"),
-            on_progress_setup=self._on_progress_setup,
-            on_progress_tick=self.progress_var.set,
-        )
-
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.refresh_playlists()
-        self.refresh_right_list()
         self.poll_download_events()
         self.check_music_end()
 
     def s(self, val):
         return int(round(val * self.scale))
+
+    def _make_menu(self):
+        return tk.Menu(
+            self.root, tearoff=0, bg=BG_HEADER, fg=TEXT_MAIN, activebackground=ACCENT_BLUE,
+            activeforeground=TEXT_MAIN, bd=1, relief="solid", font=("Segoe UI", 9)
+        )
 
     def _load_logos(self):
         icon_path = os.path.join(self.base_dir, "logo.png")
@@ -96,31 +80,93 @@ class MusicAppInterface:
             self.top_logo_img = self.photo_icon.subsample(factor, factor)
 
     def on_closing(self):
-        self.player.shutdown()
+        self.storage.save_settings(self.player_panel.volume_var.get())
+        self.player_panel.shutdown()
         self.root.destroy()
 
-    # --- ИНТЕРФЕЙС ---
-    def create_context_menu(self):
-        self.context_menu = tk.Menu(
-            self.root, tearoff=0, bg=BG_HEADER, fg=TEXT_MAIN, activebackground=ACCENT_BLUE,
-            activeforeground=TEXT_MAIN, bd=1, relief="solid", font=("Segoe UI", 9)
+    # --- ПЛОХОЙ СПИСОК ---
+    def _update_bad_list_btn_text(self):
+        if hasattr(self, "bad_list_btn"):
+            count = len(self.storage.bad_songs)
+            self.bad_list_btn.config(text=f"🚫 Плохой список ({count})" if count else "🚫 Плохой список")
+
+    def _on_bad_songs_updated(self):
+        self._update_bad_list_btn_text()
+        self.refresh_right_list()
+
+    def add_to_bad_songs(self, songs):
+        if self.storage.add_bad_songs(songs):
+            self._on_bad_songs_updated()
+
+    def _on_bad_songs_dialog_changed(self):
+        self.storage.save_bad_songs()
+        self._on_bad_songs_updated()
+
+    def open_bad_songs_dialog(self):
+        open_bad_songs_dialog(
+            self.root, self.s, self.photo_icon, self.storage.bad_songs, self._on_bad_songs_dialog_changed
         )
+
+    # --- ИНТЕРФЕЙС И КОНТЕКСТНЫЕ МЕНЮ ---
+    def create_context_menu(self):
+        self.context_menu = self._make_menu()
         self.context_menu.add_command(label="Воспроизвести")
         self.context_menu.add_command(label="Добавить в плейлист")
+        self.context_menu.add_command(label="В плохой список")
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Подать жалобу")
 
-    def _show_tree_context_menu(self, event, tree, play_cmd, add_cmd, report_cmd):
+        self.playlist_context_menu = self._make_menu()
+        self.playlist_context_menu.add_command(label="Удалить", command=self.delete_selected_from_playlist)
+
+    def _popup_on_row(self, event, tree, menu, before_popup=None):
         row = tree.identify_row(event.y)
         if not row:
             return
         if row not in tree.selection():
             tree.selection_set(row)
             tree.focus(row)
-        self.context_menu.entryconfigure(0, command=play_cmd)
-        self.context_menu.entryconfigure(1, command=add_cmd)
-        self.context_menu.entryconfigure(3, command=report_cmd)
-        self.context_menu.tk_popup(event.x_root, event.y_root)
+        if before_popup:
+            before_popup()
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _get_selected(self, tree, songs_map):
+        return [songs_map[i] for i in tree.selection() if i in songs_map]
+
+    def _bind_song_tree(self, tree, songs_map):
+        play_cmd = lambda: self._play_from_tree(tree, songs_map)
+        add_cmd = lambda: self.add_to_playlist(self._get_selected(tree, songs_map))
+        bad_cmd = lambda: self.add_to_bad_songs(self._get_selected(tree, songs_map))
+        report_cmd = lambda: (sel := self._get_selected(tree, songs_map)) and open_report_dialog(
+            self.root, self.s, self.photo_icon, sel[0],
+            source="Поиск треков" if self.is_search_mode else "Рекомендации"
+        )
+
+        def configure_menu():
+            self.context_menu.entryconfigure(0, command=play_cmd)
+            self.context_menu.entryconfigure(1, command=add_cmd)
+            self.context_menu.entryconfigure(2, command=bad_cmd)
+            self.context_menu.entryconfigure(4, command=report_cmd)
+
+        tree.bind("<Double-1>", lambda _e: play_cmd())
+        tree.bind("<Button-3>", lambda e: self._popup_on_row(e, tree, self.context_menu, configure_menu))
+
+    def _make_equal_tree(self, parent):
+        tree = create_scrollbar_tree(
+            parent,
+            (("Исполнитель", self.s(120)), ("Название", self.s(120)), ("Жанр", self.s(120))),
+            self.s
+        )
+        for col in ("#1", "#2", "#3"):
+            tree.column(col, stretch=True, minwidth=self.s(60))
+
+        def on_resize(event):
+            col_w = max(self.s(60), (event.width - 2) // 3)
+            for col in ("#1", "#2", "#3"):
+                tree.column(col, width=col_w)
+
+        tree.bind("<Configure>", on_resize)
+        return tree
 
     def create_top_bar(self):
         top = tk.Frame(self.root, bg=BG_HEADER, padx=self.s(12), pady=self.s(8))
@@ -138,138 +184,94 @@ class MusicAppInterface:
             values=[GENRE_PLACEHOLDER] + DataBase.GENRES, font=("Segoe UI", 9)
         )
         self.genre_combo.pack(side=tk.LEFT, ipady=self.s(2))
-        self.genre_combo.bind("<<ComboboxSelected>>", self.on_genre_selected)
+        self.genre_combo.bind("<<ComboboxSelected>>", lambda _e: (self.genre_combo.selection_clear(), self.refresh_right_list()))
 
         if self.top_logo_img:
             tk.Label(top, image=self.top_logo_img, bg=BG_HEADER).pack(side=tk.RIGHT, padx=(self.s(10), 0))
 
-        for v in (self.title_var, self.artist_var):
-            v.trace_add("write", self.schedule_search)
+        self.bad_list_btn = make_button(top, "🚫 Плохой список", self.open_bad_songs_dialog, self.s)
+        self.bad_list_btn.configure(
+            relief="solid", bd=1, highlightthickness=1,
+            highlightbackground=BORDER_COLOR, highlightcolor=ACCENT_BLUE,
+            padx=self.s(10), pady=self.s(4),
+        )
+        self.bad_list_btn.pack(side=tk.RIGHT)
+        self._update_bad_list_btn_text()
+
+        self.title_var.trace_add("write", self.schedule_search)
 
     def create_main_layout(self):
         main = tk.Frame(self.root, bg=BG_MAIN, padx=self.s(10), pady=self.s(10))
         main.pack(fill=tk.BOTH, expand=True)
 
-        # Левая колонка немного уже (weight=9), центральная и правая — шире (weight=11)
-        main.grid_columnconfigure(0, weight=9, uniform="cols")
-        main.grid_columnconfigure(1, weight=11, uniform="cols")
-        main.grid_columnconfigure(2, weight=11, uniform="cols")
+        # Две колонки: слева плейлист + плеер, справа рекомендации / поиск
+        main.grid_columnconfigure(0, weight=1, uniform="cols")
+        main.grid_columnconfigure(1, weight=1, uniform="cols")
         main.grid_rowconfigure(0, weight=1)
 
         # Левая колонка
         left = tk.Frame(main, bg=BG_MAIN)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, self.s(6)))
 
-        rec_frame = make_section_frame(left, "Рекомендуемые песни", self.s)
-        rec_frame.pack(fill=tk.BOTH, expand=True, pady=(0, self.s(8)))
-        self.rec_status = tk.Label(rec_frame, text="", anchor="w", bg=BG_HEADER, fg=TEXT_MUTED,
-                                   font=("Segoe UI", 8), padx=self.s(8), pady=self.s(3))
-        self.rec_status.pack(side=tk.BOTTOM, fill=tk.X)
-        self.rec_tree = create_scrollbar_tree(
-            rec_frame, (("Исполнитель", self.s(80)), ("Название", self.s(95)), ("Жанр", self.s(65))), self.s
-        )
-        self.rec_tree.bind("<Double-1>", self.play_from_recs)
-        self.rec_tree.bind("<Button-3>", lambda e: self._show_tree_context_menu(
-            e, self.rec_tree, self.play_from_recs, self.add_selected_rec_to_playlist, self.report_selected_rec))
+        center = make_section_frame(left, "Список песен в плейлисте", self.s)
+        center.pack(fill=tk.BOTH, expand=True, pady=(0, self.s(8)))
 
-        # Блок плеера
-        player_box = make_section_frame(left, "Текущий трек", self.s)
-        player_box.configure(bg=BG_PANEL)
-        player_box.pack(fill=tk.X, side=tk.BOTTOM)
-        self.track_info_label = tk.Label(
-            player_box, text="Название песни:\nИсполнитель песни:\nПараметры: Выберите трек",
-            bg=BG_PANEL, fg=TEXT_MAIN, justify=tk.LEFT, anchor="w", font=("Segoe UI", 9),
-            padx=self.s(8), pady=self.s(6)
-        )
-        self.track_info_label.pack(fill=tk.X)
-
-        self.progress_var = tk.DoubleVar()
-        self.progress_slider = ttk.Scale(player_box, from_=0, to=100, variable=self.progress_var)
-        self.progress_slider.pack(fill=tk.X, padx=self.s(8), pady=self.s(4))
-        self.progress_slider.bind("<ButtonPress-1>", lambda e: setattr(self.player, "is_seeking", True))
-        self.progress_slider.bind("<ButtonRelease-1>", self.on_slider_release)
-
-        vol = tk.Frame(player_box, bg=BG_PANEL)
-        vol.pack(fill=tk.X, padx=self.s(8), pady=(0, self.s(4)))
-        tk.Label(vol, text="🔈", bg=BG_PANEL, fg=TEXT_MUTED, font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        ttk.Scale(vol, from_=0, to=100, variable=self.volume_var,
-                  command=lambda v: self.player.set_volume(v)).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=self.s(6))
-        tk.Label(vol, text="🔊", bg=BG_PANEL, fg=TEXT_MUTED, font=("Segoe UI", 10)).pack(side=tk.LEFT)
-
-        ctrl = tk.Frame(player_box, bg=BG_PANEL)
-        ctrl.pack(fill=tk.X, padx=self.s(6), pady=(self.s(2), self.s(8)))
-
-        buttons_cfg = (
-            ("⏮ Пред", lambda: self.player.prev_track(), False, None, 9),
-            ("▶ Играть", lambda: self.player.toggle_pause(), True, "play_btn", 9),
-            ("⏭ След", lambda: self.player.next_track(), False, None, 9),
-            ("⏹", lambda: self.player.stop_track(), False, None, 4),
-            ("-----", self.on_toggle_loop, False, "loop_btn", 9),
-        )
-
-        for col, (text, cmd, acc, attr, weight) in enumerate(buttons_cfg):
-            ctrl.grid_columnconfigure(col, weight=weight, uniform="player_btns")
-            btn = make_button(ctrl, text, cmd, self.s, accent=acc)
-            btn.grid(row=0, column=col, sticky="ew", padx=2)
-            if attr:
-                setattr(self, attr, btn)
-
-        # Центральная колонка
-        center = make_section_frame(main, "Список песен в плейлисте", self.s)
-        center.grid(row=0, column=1, sticky="nsew", padx=self.s(6))
         pl_bar = tk.Frame(center, bg=BG_PANEL, pady=self.s(5), padx=self.s(6))
         pl_bar.pack(fill=tk.X)
         self.playlist_combo = ttk.Combobox(pl_bar, state="readonly", textvariable=self.playlist_var, font=("Segoe UI", 9))
         self.playlist_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.playlist_combo.bind("<<ComboboxSelected>>", self.on_playlist_selected)
-        make_button(pl_bar, "✎", self.rename_playlist, self.s).pack(side=tk.LEFT, padx=(self.s(4), 0))
-        make_button(pl_bar, "+ Создать", self.create_playlist, self.s, accent=True).pack(side=tk.LEFT, padx=(self.s(4), 0))
-        make_button(pl_bar, "Импорт MP3", self.import_local_files, self.s).pack(side=tk.LEFT, padx=(self.s(4), 0))
+        self.playlist_combo.bind("<<ComboboxSelected>>", lambda _e: (self.playlist_combo.selection_clear(), self.open_playlist()))
 
-        self.playlist_status = tk.Label(center, text="", anchor="w", bg=BG_HEADER, fg=TEXT_MUTED,
-                                        font=("Segoe UI", 8), padx=self.s(8), pady=self.s(3))
+        # Векторная кнопка редактирования плейлиста (вместо расплывчатого символа шрифта)
+        edit_btn = AimpIconButton(pl_bar, "edit", self.rename_playlist, self.s, size=26, bg=BG_HEADER)
+        edit_btn.configure(highlightthickness=1, highlightbackground=BORDER_COLOR)
+        edit_btn.pack(side=tk.LEFT, padx=(self.s(5), 0))
+
+        make_button(pl_bar, "+ Создать", self.create_playlist, self.s, accent=True).pack(side=tk.LEFT, padx=(self.s(5), 0))
+
+        self.playlist_status = tk.Label(center, text="", anchor="w", bg=BG_HEADER, fg=TEXT_MUTED, font=("Segoe UI", 8), padx=self.s(8), pady=self.s(3))
         self.playlist_status.pack(side=tk.BOTTOM, fill=tk.X)
-        self.playlist_tree = create_scrollbar_tree(
-            center, (("Исполнитель", self.s(85)), ("Название", self.s(100)), ("Жанр", self.s(65)), ("Удалить", self.s(58))), self.s
-        )
-        self.playlist_tree.column("Удалить", anchor="center", stretch=False, minwidth=self.s(54))
-        self.playlist_tree.heading("Удалить", anchor="center")
+        self.playlist_tree = self._make_equal_tree(center)
         self.playlist_tree.bind("<Double-1>", self.play_from_playlist)
-        self.playlist_tree.bind("<Button-1>", self.on_playlist_tree_click)
+        self.playlist_tree.bind("<Button-3>", lambda e: self._popup_on_row(e, self.playlist_tree, self.playlist_context_menu))
 
-        # Правая колонка
-        self.right_column = make_section_frame(main, "Поиск треков", self.s)
-        self.right_column.grid(row=0, column=2, sticky="nsew", padx=(self.s(6), 0))
-        self.search_status = tk.Label(self.right_column, text="", anchor="w", bg=BG_HEADER, fg=TEXT_MUTED,
-                                      font=("Segoe UI", 8), padx=self.s(8), pady=self.s(3))
-        self.search_status.pack(side=tk.BOTTOM, fill=tk.X)
-        self.random_tree = create_scrollbar_tree(
-            self.right_column, (("Исполнитель", self.s(95)), ("Название", self.s(110)), ("Жанр", self.s(80))), self.s
+        self.player_panel = PlayerPanel(
+            parent=left,
+            root=self.root,
+            temp_dir=os.path.join(self.base_dir, "songs_temporary"),
+            scale_fn=self.s,
+            initial_volume=self.storage.settings["volume"],
+            on_save_volume=self.storage.save_settings,
         )
-        self.random_tree.bind("<Double-1>", self.play_from_random)
-        self.random_tree.bind("<Button-3>", lambda e: self._show_tree_context_menu(
-            e, self.random_tree, self.play_from_random, self.add_selected_right_to_playlist, self.report_selected_right))
 
-    # --- КОЛЛБЭКИ ПЛЕЕРА ---
-    def _on_player_status(self, track, status):
-        if track:
-            self.track_info_label.config(text=f"Название песни: {track['title']}\nИсполнитель песни: {track['artist']}\nПараметры: {status}")
-        else:
-            self.track_info_label.config(text=f"Название песни:\nИсполнитель песни:\nПараметры: {status}")
+        # Правая колонка (Рекомендации + Результаты поиска)
+        self.right_column = make_section_frame(main, "Рекомендации", self.s)
+        self.right_column.grid(row=0, column=1, sticky="nsew", padx=(self.s(6), 0))
 
-    def _on_progress_setup(self, max_val):
-        self.progress_slider.config(to=max_val)
-        self.progress_var.set(0)
+        right_footer = tk.Frame(self.right_column, bg=BG_HEADER)
+        right_footer.pack(side=tk.BOTTOM, fill=tk.X)
+        self.right_status = tk.Label(right_footer, text="", anchor="w", bg=BG_HEADER, fg=TEXT_MUTED, font=("Segoe UI", 8), padx=self.s(8), pady=self.s(3))
+        self.right_status.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-    def on_slider_release(self, _event):
-        self.player.is_seeking = False
-        self.player.seek_to(self.progress_var.get())
+        self.rec_refresh_btn = make_button(right_footer, "↻ Обновить", self.update_recommendations, self.s)
+        self.rec_refresh_btn.pack(side=tk.RIGHT, padx=self.s(4), pady=self.s(2))
 
-    def on_toggle_loop(self):
-        self.loop_btn.config(text=self.player.toggle_loop())
+        self.right_tree = self._make_equal_tree(self.right_column)
+        self._bind_song_tree(self.right_tree, self.right_songs)
+
+    def _set_right_header(self, title):
+        def find_and_set(parent):
+            for w in parent.winfo_children():
+                if isinstance(w, tk.Label) and w is not self.right_status:
+                    w.config(text=title)
+                    return True
+                if find_and_set(w):
+                    return True
+            return False
+        find_and_set(self.right_column)
 
     def check_music_end(self):
-        self.player.tick()
+        self.player_panel.tick()
         self.root.after(100, self.check_music_end)
 
     # --- ЗАПУСК ТРЕКОВ ---
@@ -277,182 +279,136 @@ class MusicAppInterface:
         if sel := tree.selection():
             q = [{"link": l, "artist": a, "title": t, "is_local": False}
                  for i in tree.get_children() for l, a, t, _ in [songs_map[i]]]
-            self.player.set_queue(q, tree.index(sel[0]))
+            self.player_panel.player.set_queue(q, tree.index(sel[0]))
 
-    def play_from_playlist(self, event=None):
-        if (event and self.playlist_tree.identify_column(event.x) == "#4") or not (sel := self.playlist_tree.selection()):
+    def play_from_playlist(self, _event=None):
+        if not (sel := self.playlist_tree.selection()):
             return
         pl = self.playlist_var.get()
         q = [{"link": s["link"], "artist": s["artist"], "title": s["title"], "file": s.get("file"),
-              "full_path": os.path.join(Playlists.BASE_DIR, pl, s["file"]) if s.get("file") else None,
-              "is_local": True} for s in Playlists.load_songs(pl)]
-        self.player.set_queue(q, self.playlist_tree.index(sel[0]))
+              "full_path": os.path.join(playlists.BASE_DIR, pl, s["file"]) if s.get("file") else None,
+              "is_local": True} for s in playlists.load_songs(pl)]
+        self.player_panel.player.set_queue(q, self.playlist_tree.index(sel[0]))
 
-    def play_from_recs(self, _event=None):
-        self._play_from_tree(self.rec_tree, self.rec_songs_map)
-
-    def play_from_random(self, _event=None):
-        self._play_from_tree(self.random_tree, self.right_songs)
-
-    # --- ДИАЛОГИ И ЖАЛОБЫ ---
-    def report_selected_rec(self):
-        if (sel := self.rec_tree.selection()) and sel[0] in self.rec_songs_map:
-            open_report_dialog(self.root, self.s, self.photo_icon, self.rec_songs_map[sel[0]], source="Рекомендации")
-
-    def report_selected_right(self):
-        if (sel := self.random_tree.selection()) and sel[0] in self.right_songs:
-            open_report_dialog(self.root, self.s, self.photo_icon, self.right_songs[sel[0]], source="Поиск треков")
-
+    # --- УПРАВЛЕНИЕ ПЛЕЙЛИСТАМИ ---
     def create_playlist(self):
         open_create_playlist_dialog(self.root, self.s, self.photo_icon, lambda name: self.refresh_playlists(select=name))
+
+    def _delete_playlist_files(self, name):
+        pl_dir = os.path.join(playlists.BASE_DIR, name)
+        self.player_panel.stop_if_in_dir(pl_dir)
+        if hasattr(playlists, "delete_playlist"):
+            playlists.delete_playlist(name)
+        elif os.path.isdir(pl_dir):
+            shutil.rmtree(pl_dir)
+        self.refresh_playlists()
 
     def rename_playlist(self):
         current = self.playlist_var.get()
         if not current:
             return messagebox.showinfo("Плейлист", "Нет выбранного плейлиста.", parent=self.root)
-        if self.player.is_playing and self.player.current_track_path:
-            pl_dir = os.path.abspath(os.path.join(Playlists.BASE_DIR, current))
-            if os.path.abspath(self.player.current_track_path).startswith(pl_dir + os.sep):
-                self.player.stop_track()
+        self.player_panel.stop_if_in_dir(os.path.join(playlists.BASE_DIR, current))
         open_rename_playlist_dialog(
             self.root, self.s, self.photo_icon, current,
-            lambda new_name: self.refresh_playlists(select=new_name)
+            on_renamed=lambda new_name: self.refresh_playlists(select=new_name),
+            on_deleted=self._delete_playlist_files,
         )
-
-    # --- ПЛЕЙЛИСТЫ, РЕКОМЕНДАЦИИ И ПОИСК ---
-    def get_random_playlist_songs(self, count=5):
-        songs = list(self.playlist_items_data.values())
-        if not songs:
-            return []
-        return random.sample(songs, min(count, len(songs)))
 
     def _get_all_playlists_links(self):
         existing_links = set()
         try:
-            for pl_name in Playlists.list_playlists():
-                for song in Playlists.load_songs(pl_name):
+            for pl_name in playlists.list_playlists():
+                for song in playlists.load_songs(pl_name):
                     if link := song.get("link"):
                         existing_links.add(link)
         except Exception as e:
             print(f"Ошибка при сборе треков из плейлистов: {e}")
         return existing_links
 
+    def _filter_rec_candidates(self, candidates, excluded_links, limit=15):
+        result = []
+        for s in candidates:
+            item = (s.get("link", ""), s.get("artist", ""), s.get("title", ""), s.get("genre", "")) if isinstance(s, dict) else s
+            if item[0] not in excluded_links:
+                result.append(item)
+                if len(result) >= limit:
+                    break
+        return result
+
+    # --- ОБНОВЛЕНИЕ ПРАВОЙ КОЛОНКИ (ПОИСК / РЕКОМЕНДАЦИИ) ---
     def update_recommendations(self):
-        sample_songs = self.get_random_playlist_songs(5)
-        if not sample_songs:
-            self.set_recommendations([])
-            self.rec_status.config(text="Добавьте треки в плейлист")
+        if self.is_search_mode:
             return
 
+        self._set_right_header("Рекомендации")
+        if not self.rec_refresh_btn.winfo_ismapped():
+            self.rec_refresh_btn.pack(side=tk.RIGHT, padx=self.s(4), pady=self.s(2))
+
+        excluded_links = self._get_all_playlists_links() | set(self.storage.bad_songs.keys())
+        songs = list(self.playlist_items_data.values())
+        sample_songs = random.sample(songs, min(5, len(songs))) if songs else []
+        fetch_count = 15 + len(excluded_links)
+
         try:
-            avg_vector = DataBase.get_average_embedding(sample_songs)
-            if avg_vector is None:
-                self.set_recommendations([])
-                self.rec_status.config(text="Нет данных для рекомендаций")
-                return
+            avg_vector = DataBase.get_average_embedding(sample_songs) if sample_songs else None
+            if avg_vector is not None:
+                candidates = DataBase.find_similar_songs_db(avg_vector, fetch_count)
+                label_prefix = "Подобрано треков"
+            else:
+                candidates = DataBase.get_random_songs(fetch_count)
+                label_prefix = "Случайная подборка"
 
-            # Собираем ссылки на все песни во всех плейлистах пользователя
-            existing_links = self._get_all_playlists_links()
-
-            # Запрашиваем с запасом, чтобы после фильтрации осталось 15 новых треков
-            fetch_count = 15 + len(existing_links)
-            similar_songs = DataBase.find_similar_songs_db(avg_vector, fetch_count)
-
-            formatted_songs = []
-            for s in similar_songs:
-                if isinstance(s, dict):
-                    item = (
-                        s.get("link", ""),
-                        s.get("artist", ""),
-                        s.get("title", ""),
-                        s.get("genre", "")
-                    )
-                else:
-                    item = s
-
-                # Пропускаем песню, если она уже есть в любом из плейлистов
-                if item[0] in existing_links:
-                    continue
-
-                formatted_songs.append(item)
-                if len(formatted_songs) >= 15:
-                    break
-
-            self.set_recommendations(formatted_songs)
-            self.rec_status.config(text=f"Подобрано треков: {len(formatted_songs)}")
+            formatted = self._filter_rec_candidates(candidates, excluded_links)
+            self._fill_tree(self.right_tree, self.right_songs, formatted)
+            self.right_status.config(text=f"{label_prefix}: {len(formatted)}")
         except Exception as e:
             print(f"Ошибка обновления рекомендаций: {e}")
-            self.set_recommendations([])
-            self.rec_status.config(text="Ошибка подбора")
+            self._fill_tree(self.right_tree, self.right_songs, [])
+            self.right_status.config(text="Ошибка подбора")
 
-    def on_playlist_tree_click(self, event):
-        if self.playlist_tree.identify_region(event.x, event.y) == "cell" and self.playlist_tree.identify_column(event.x) == "#4":
-            if item := self.playlist_tree.identify_row(event.y):
-                self.delete_song_from_playlist(item)
-
-    def _stop_if_current_file(self, filepath):
-        if self.player.current_track_path and os.path.abspath(self.player.current_track_path) == os.path.abspath(filepath):
-            self.player.stop_track()
-
-    def delete_song_from_playlist(self, item):
-        playlist, song = self.playlist_var.get(), self.playlist_items_data.get(item)
-        if not playlist or not song:
+    def delete_selected_from_playlist(self):
+        playlist = self.playlist_var.get()
+        selected = self.playlist_tree.selection()
+        if not playlist or not selected:
             return
         try:
-            Playlists.remove_song(playlist, song["link"], on_before_delete_file=self._stop_if_current_file)
+            for item in selected:
+                if song := self.playlist_items_data.get(item):
+                    playlists.remove_song(playlist, song["link"], on_before_delete_file=self.player_panel.stop_if_file)
             self.load_songs_to_playlist()
             self.update_recommendations()
         except Exception as e:
             messagebox.showerror("Удаление", f"Не удалось удалить песню: {e}", parent=self.root)
 
     def refresh_playlists(self, select=None):
-        names = Playlists.list_playlists()
+        names = playlists.list_playlists()
         self.playlist_combo["values"] = names
         current = select or self.playlist_var.get()
         self.playlist_var.set(current if current in names else (names[0] if names else ""))
         self.open_playlist()
 
-    def import_local_files(self):
-        if not (playlist := self.playlist_var.get()):
-            return messagebox.showinfo("Плейлист", "Сначала создайте плейлист.", parent=self.root)
-        if not (files := filedialog.askopenfilenames(parent=self.root, title="Выберите аудиофайлы",
-            filetypes=[("Аудио", "*.mp3 *.wav *.flac *.ogg *.m4a"), ("Все файлы", "*.*")])):
-            return
-        try:
-            copied, added = Playlists.import_files(playlist, files)
-            self.load_songs_to_playlist()
-            self.update_recommendations()
-            messagebox.showinfo("Импорт", f"Скопировано файлов: {copied}\nДобавлено в плейлист: {added}", parent=self.root)
-        except Exception as e:
-            messagebox.showerror("Импорт", f"Ошибка импорта файлов: {e}", parent=self.root)
-
-    def on_playlist_selected(self, _event=None):
-        self.playlist_combo.selection_clear()
-        self.open_playlist()
-
     def open_playlist(self):
         if playlist := self.playlist_var.get():
             try:
-                Playlists.scan_local_files(playlist)
+                playlists.scan_local_files(playlist)
             except Exception as e:
                 print(f"Ошибка сканирования папки плейлиста: {e}")
         self.load_songs_to_playlist()
         self.update_recommendations()
         if playlist:
             try:
-                Playlists.download_missing(playlist, lambda p, l, err: self._download_events.put((p, l, err)))
+                playlists.download_missing(playlist, lambda p, l, err: self._download_events.put((p, l, err)))
             except Exception as e:
                 print(f"Ошибка: {e}")
 
     def load_songs_to_playlist(self):
         self.playlist_tree.delete(*self.playlist_tree.get_children())
-        self.playlist_links.clear()
         self.playlist_items_data.clear()
         if playlist := self.playlist_var.get():
             try:
-                for song in Playlists.load_songs(playlist):
-                    item = self.playlist_tree.insert("", tk.END, values=(song["artist"] or "—", song["title"] or "—", song["genre"] or "—", "✖"))
-                    self.playlist_links[item], self.playlist_items_data[item] = song["link"], song
+                for song in playlists.load_songs(playlist):
+                    item = self.playlist_tree.insert("", tk.END, values=(song["artist"] or "—", song["title"] or "—", song["genre"] or "—"))
+                    self.playlist_items_data[item] = song
             except Exception as e:
                 print(f"Ошибка: {e}")
         self.update_playlist_status()
@@ -462,17 +418,11 @@ class MusicAppInterface:
             text = "Плейлистов нет"
         else:
             try:
-                total, done = Playlists.playlist_stats(playlist)
+                total, done = playlists.playlist_stats(playlist)
                 text = f"Песен: {total} · скачано: {done}"
             except Exception:
                 text = "Ошибка чтения"
         self.playlist_status.config(text=f"{note} · {text}" if note else text)
-
-    def add_selected_right_to_playlist(self):
-        self.add_to_playlist([self.right_songs[i] for i in self.random_tree.selection() if i in self.right_songs])
-
-    def add_selected_rec_to_playlist(self):
-        self.add_to_playlist([self.rec_songs_map[i] for i in self.rec_tree.selection() if i in self.rec_songs_map])
 
     def add_to_playlist(self, songs):
         if not (playlist := self.playlist_var.get()):
@@ -480,14 +430,14 @@ class MusicAppInterface:
         if not songs:
             return
         for link, artist, title, genre in songs:
-            Playlists.add_song(playlist, link, artist, title, genre, on_done=lambda p, l, err: self._download_events.put((p, l, err)))
+            playlists.add_song(playlist, link, artist, title, genre, on_done=lambda p, l, err: self._download_events.put((p, l, err)))
         self.load_songs_to_playlist()
         self.update_recommendations()
 
     def poll_download_events(self):
         while True:
             try:
-                if (err := self._download_events.get_nowait()[2]):
+                if err := self._download_events.get_nowait()[2]:
                     print(f"Ошибка скачивания: {err}")
             except queue.Empty:
                 break
@@ -499,26 +449,32 @@ class MusicAppInterface:
             self.root.after_cancel(self._search_job)
         self._search_job = self.root.after(SEARCH_DELAY_MS, self.refresh_right_list)
 
-    def on_genre_selected(self, _event=None):
-        self.genre_combo.selection_clear()
-        self.refresh_right_list()
-
     def refresh_right_list(self):
         if self._search_job is not None:
             self.root.after_cancel(self._search_job)
             self._search_job = None
+
         genre = "" if self.genre_var.get() == GENRE_PLACEHOLDER else self.genre_var.get()
         query = self.title_var.get().strip()
+
+        # Если строка поиска и жанр пусты — возвращаем рекомендации
+        if not query and not genre:
+            self.is_search_mode = False
+            self.update_recommendations()
+            return
+
+        self.is_search_mode = True
+        self._set_right_header("Результаты поиска")
+        self.rec_refresh_btn.pack_forget()
+
         try:
-            if query or genre:
-                songs = DataBase.search_songs(query=query, genre=genre)
-            else:
-                if self._random_songs is None:
-                    self._random_songs = DataBase.get_random_songs(RANDOM_SONGS_COUNT)
-                songs = self._random_songs
+            songs = [s for s in DataBase.search_songs(query=query, genre=genre) if s[0] not in self.storage.bad_songs]
+            random.shuffle(songs)
         except Exception:
             songs = []
-        self._fill_tree(self.random_tree, self.right_songs, songs)
+
+        self._fill_tree(self.right_tree, self.right_songs, songs)
+        self.right_status.config(text=f"Найдено треков: {len(songs)}")
 
     def _fill_tree(self, tree, target_map, songs):
         tree.delete(*tree.get_children())
@@ -527,19 +483,18 @@ class MusicAppInterface:
             item = tree.insert("", tk.END, values=(artist or "—", title or "—", genre or "—"))
             target_map[item] = (link, artist, title, genre)
 
-    def fill_right_tree(self, songs):
-        self._fill_tree(self.random_tree, self.right_songs, songs)
-
-    def set_recommendations(self, songs):
-        self.rec_songs = list(songs)
-        self._fill_tree(self.rec_tree, self.rec_songs_map, self.rec_songs)
-
 
 if __name__ == "__main__":
-    enable_high_dpi()
     if sys.platform == "win32":
         import ctypes
+        for fn in (lambda: ctypes.windll.shcore.SetProcessDpiAwareness(1), ctypes.windll.user32.SetProcessDPIAware):
+            try:
+                fn()
+                break
+            except Exception:
+                pass
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("musicclean.app.v1")
+
     root = tk.Tk()
     MusicAppInterface(root)
     root.mainloop()

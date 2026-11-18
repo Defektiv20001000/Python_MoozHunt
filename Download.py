@@ -1,8 +1,4 @@
-import os
-import random
-import sqlite3
-import uuid
-import yt_dlp
+import os, random, sqlite3, uuid, yt_dlp
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "music_vault.db")
@@ -16,7 +12,9 @@ artists_and_genres = {
         "Khalid", "Shawn Mendes", "Camila Cabello", "Lana Del Rey", "Michael Jackson",
         "Lady Gaga", "Michael Buble", "George Michael", "Ricky Martin",
         "Beyonce", "Rihanna", "Adele", "Justin Timberlake", "Katy Perry",
-        "Selena Gomez", "Britney Spears", "Pink"
+        "Selena Gomez", "Britney Spears", "Pink",
+        "Zivert", "Полина Гагарина", "Дима Билан", "Сергей Лазарев",
+        "Ёлка", "JONY", "ANIKV", "Elton John", "Gotye"
     ],
     "Rock": [
         "Linkin Park", "Coldplay", "Arctic Monkeys", "Green Day", "Foo Fighters",
@@ -25,12 +23,19 @@ artists_and_genres = {
         "Evanescence", "Nickelback", "Paramore", "Royal Blood", "Deftones",
         "Король и Шут", "KISS", "Skip The Use",
         "Queen", "Nirvana", "AC/DC", "Metallica", "Pink Floyd",
-        "The Rolling Stones", "Led Zeppelin", "Guns N' Roses", "U2"
+        "The Rolling Stones", "Led Zeppelin", "Guns N' Roses", "U2",
+        "Кино", "Сплин", "Би-2", "Земфира",
+        "Мумий Тролль", "Агата Кристи", "Порнофильмы"
     ],
     "Metal": [
-        "Rammstein", "Powerwolf", "Sabaton", "Eisbreacher",
+        "Rammstein", "Powerwolf", "Sabaton", "Eisbrecher",
         "Slipknot", "System of a Down", "Iron Maiden", "Judas Priest", "Nightwish",
-        "Disturbed", "Korn", "Avenged Fold", "Megadeth", "Slayer"
+        "Disturbed", "Korn", "Avenged Sevenfold", "Megadeth", "Slayer",
+        "Black Sabbath", "Pantera", "Gojira", "Tool", "In Flames",
+        "Children of Bodom", "Amon Amarth", "Arch Enemy", "Lamb of God", "Meshuggah",
+        "Trivium", "Opeth", "Blind Guardian", "Helloween", "Sepultura",
+        "Ария", "Кипелов", "Эпидемия", "Слот",
+        "Louna", "Stigmata", "Amatory"
     ],
     "Hip-Hop": [
         "Drake", "Kendrick Lamar", "Eminem", "Travis Scott", "J. Cole",
@@ -38,7 +43,9 @@ artists_and_genres = {
         "The Notorious B.I.G.", "Juice WRLD", "Lil Peep", "XXXTentacion", "Post Malone",
         "Frank Ocean", "The Internet", "Anderson .Paak", "Leon Bridges", "Miguel",
         "Tupac Shakur", "Kanye West", "Jay-Z", "Snoop Dogg", "Lil Wayne",
-        "50 Cent", "Dr. Dre", "A$AP Rocky"
+        "50 Cent", "Dr. Dre", "A$AP Rocky",
+        "Баста", "Oxxxymiron", "Скриптонит", "Miyagi & Эндшпиль",
+        "Каста", "Noize MC", "PHARAOH"
     ],
     "Electronic": [
         "Daft Punk", "Kavinsky", "M83", "The Prodigy", "The Chemical Brothers",
@@ -47,7 +54,9 @@ artists_and_genres = {
         "Gesaﬀelstein", "Perturbator", "Carpenter Brut", "The Midnight", "FM-84",
         "Mr. Kitty", "Modjo", "INTERWORLD", "Kordhell",
         "Martin Garrix", "David Guetta", "Tiësto", "Armin van Buuren", "The Chainsmokers",
-        "Swedish House Mafia", "Pendulum", "Fatboy Slim"
+        "Swedish House Mafia", "Pendulum", "Fatboy Slim",
+        "IC3PEAK", "Cream Soda", "ЛСП", "Mujuice",
+        "Нейромонах Феофан", "Swanky Tunes", "Pendulum (RU) / Teddy Killerz"
     ],
     "Indie": [
         "Tame Impala", "Gorillaz", "Mac DeMarco", "Boy Pablo", "Cigarettes After Sex",
@@ -55,18 +64,27 @@ artists_and_genres = {
         "Beach House", "Chvrches", "Glass Animals", "Khruangbin", "Thundercat",
         "FKJ", "Tom Misch", "Joji", "Cuco", "Clairo", "Мы",
         "Florence + The Machine", "Bon Iver", "Thexx", "Vampire Weekend",
-        "Local Natives", "Iron & Wine", "Sufjan Stevens", "Fleet Foxes"
+        "Local Natives", "Iron & Wine", "Sufjan Stevens", "Fleet Foxes",
+        "Монеточка", "Сироткин", "Дайте танк (!)", "Буерак",
+        "СБПЧ", "Пошлая Молли", "kedr livanskiy"
     ],
     "Disco": [
         "Modern Talking", "ABBA", "Boney M.", "Sandy Marton", "Scissors Sisters",
         "Bee Gees", "Donna Summer", "Earth, Wind & Fire", "Chic", "KC and the Sunshine Band",
-        "Kool & The Gang", "Gloria Gaynor", "Village People", "Baccara", "Arabesque"
+        "Kool & The Gang", "Gloria Gaynor", "Village People", "Baccara", "Arabesque",
+        "C.C. Catch", "Ottawan", "Eruption", "Dschinghis Khan", "bad Boys Blue",
+        "Ricchi e Poveri", "Gazebo", "Lipps Inc.", "Sister Sledge", "Sylvester",
+        "Bananarama", "Pet Shop Boys", "Jamiroquai", "Kylie Minogue", "Daft Punk (Random Access)",
+        "Мираж", "Ласковый май", "Кар-Мэн", "Форум",
+        "Комбинация", "Технология", "Анжелика Варум"
     ],
     "Eurodance/Dance-Pop": [
         "Stormae", "Shaggy", "Dave Rogers", "THE ROOP", "Holly Dolly", "Little Big",
         "4Wheel", "Tako",
         "Aqua", "Vengaboys", "2 Unlimited", "Haddaway", "E-Type",
-        "Corona", "Culture Beat", "Ace of Base", "Dr. Alban", "Scooter"
+        "Corona", "Culture Beat", "Ace of Base", "Dr. Alban", "Scooter",
+        "Руки Вверх!", "Demo", "Вирус!", "Краски",
+        "Hi-Fi", "Дискотека Авария", "Отпетые мошенники"
     ],
     "Classical": [
         "Бетховен", "Zaz", "Aron Wright",
@@ -77,9 +95,12 @@ artists_and_genres = {
         "The Living Tombstone", "C418", "Kevin MacLeod", "Спектакль Джо",
         "Christopher Larkin", "Lena Reine",
         "John Williams", "Hans Zimmer", "Jeremy Soule", "Nobuo Uematsu", "Martin O'Donnell",
-        "Gustavo Santaolalla", "Danny Elfman", "Ennio Morricone", "Howard Shore", "Michael Giacchino"
+        "Gustavo Santaolalla", "Danny Elfman", "Ennio Morricone", "Howard Shore", "Michael Giacchino",
+        "Эдуард Артемьев", "Алексей Рыбников", "Микаэл Таривердиев", "Игорь Корнелюк",
+        "Евгений Дога", "Кирилл Рихтер", "Илья Бешевли"
     ]
 }
+
 
 
 def download_random_song(count=1, output_dir=None):
@@ -118,7 +139,7 @@ def download_random_song(count=1, output_dir=None):
 
     selected_genre = random.choice(list(artists_and_genres.keys()))
     selected_artist = random.choice(artists_and_genres[selected_genre])
-    yt_search_string = f"ytsearch{20}:{selected_artist} songs"
+    yt_search_string = f"ytsearch{25}:{selected_artist} songs"
 
     ffmpeg_dir = BASE_DIR if any(os.path.isfile(os.path.join(BASE_DIR, n)) for n in ("ffmpeg.exe", "ffmpeg")) else None
     ydl_opts = {

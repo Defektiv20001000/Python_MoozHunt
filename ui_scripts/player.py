@@ -1,11 +1,11 @@
-import hashlib
-import os
-import shutil
-import threading
-import time
-import pygame
-import Playlists
+import hashlib, os, shutil, threading, time, pygame
+import tkinter as tk
+from tkinter import ttk
 
+from . import playlists
+from .theme import (
+    ACCENT_BLUE, AimpIconButton, BG_PANEL, TEXT_MAIN, TEXT_MUTED, make_section_frame
+)
 
 class AudioPlayer:
     def __init__(self, root, temp_dir, on_status, on_play_state, on_progress_setup, on_progress_tick):
@@ -82,12 +82,12 @@ class AudioPlayer:
 
     def _download_worker(self, track, token):
         os.makedirs(self.temp_songs_dir, exist_ok=True)
-        name = Playlists._safe_filename(" - ".join(p for p in (track.get("artist"), track.get("title")) if p)) or \
+        name = playlists._safe_filename(" - ".join(p for p in (track.get("artist"), track.get("title")) if p)) or \
                "song_" + hashlib.md5(track["link"].encode()).hexdigest()[:8]
         filepath = None
         try:
-            with Playlists._slots:
-                filepath = Playlists._download_file(track["link"], os.path.join(self.temp_songs_dir, name))
+            with playlists._slots:
+                filepath = playlists._download_file(track["link"], os.path.join(self.temp_songs_dir, name))
         except Exception as e:
             print(f"Ошибка скачивания трека в кэш: {e}")
 
@@ -193,3 +193,106 @@ class AudioPlayer:
                     self.stop_track()
             elif not self.is_seeking:
                 self.on_progress_tick(elapsed)
+
+
+class PlayerPanel:
+    def __init__(self, parent, root, temp_dir, scale_fn, initial_volume, on_save_volume):
+        self.root = root
+        self.scale_fn = scale_fn
+        self.on_save_volume = on_save_volume
+        self.volume_var = tk.DoubleVar(value=initial_volume)
+        self.progress_var = tk.DoubleVar()
+
+        self.frame = make_section_frame(parent, "Текущий трек", scale_fn)
+        self.frame.configure(bg=BG_PANEL)
+        self.frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.track_info_label = tk.Label(
+            self.frame, text="Название песни:\nИсполнитель песни:\nПараметры: Выберите трек",
+            bg=BG_PANEL, fg=TEXT_MAIN, justify=tk.LEFT, anchor="w", font=("Segoe UI", 9),
+            padx=scale_fn(8), pady=scale_fn(6)
+        )
+        self.track_info_label.pack(fill=tk.X)
+
+        self.progress_slider = ttk.Scale(self.frame, from_=0, to=100, variable=self.progress_var)
+        self.progress_slider.pack(fill=tk.X, padx=scale_fn(8), pady=scale_fn(4))
+        self.progress_slider.bind("<ButtonPress-1>", lambda _e: setattr(self.player, "is_seeking", True))
+        self.progress_slider.bind("<ButtonRelease-1>", self._on_slider_release)
+
+        vol = tk.Frame(self.frame, bg=BG_PANEL)
+        vol.pack(fill=tk.X, padx=scale_fn(8), pady=(0, scale_fn(4)))
+        tk.Label(vol, text="🔈", bg=BG_PANEL, fg=TEXT_MUTED, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        vol_slider = ttk.Scale(vol, from_=0, to=100, variable=self.volume_var, command=self._on_volume_change)
+        vol_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=scale_fn(6))
+        vol_slider.bind("<ButtonRelease-1>", lambda _e: self.on_save_volume(self.volume_var.get()))
+        tk.Label(vol, text="🔊", bg=BG_PANEL, fg=TEXT_MUTED, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+
+        ctrl = tk.Frame(self.frame, bg=BG_PANEL)
+        ctrl.pack(fill=tk.X, padx=scale_fn(6), pady=(scale_fn(4), scale_fn(10)))
+
+        center_box = tk.Frame(ctrl, bg=BG_PANEL)
+        center_box.pack(anchor="center")
+
+        self.prev_btn = AimpIconButton(center_box, "prev", lambda: self.player.prev_track(), scale_fn, size=34)
+        self.prev_btn.pack(side=tk.LEFT, padx=scale_fn(5))
+
+        self.stop_btn = AimpIconButton(center_box, "stop", lambda: self.player.stop_track(), scale_fn, size=34)
+        self.stop_btn.pack(side=tk.LEFT, padx=scale_fn(5))
+
+        self.play_btn = AimpIconButton(center_box, "play", lambda: self.player.toggle_pause(), scale_fn, size=44)
+        self.play_btn.pack(side=tk.LEFT, padx=scale_fn(8))
+
+        self.next_btn = AimpIconButton(center_box, "next", lambda: self.player.next_track(), scale_fn, size=34)
+        self.next_btn.pack(side=tk.LEFT, padx=scale_fn(5))
+
+        self.loop_btn = AimpIconButton(center_box, "loop", self._on_toggle_loop, scale_fn, size=34)
+        self.loop_btn.pack(side=tk.LEFT, padx=scale_fn(5))
+
+        self.player = AudioPlayer(
+            root=root,
+            temp_dir=temp_dir,
+            on_status=self._on_player_status,
+            on_play_state=self.play_btn.set_playing,
+            on_progress_setup=self._on_progress_setup,
+            on_progress_tick=self.progress_var.set,
+        )
+        self.player.set_volume(initial_volume)
+
+    def _on_player_status(self, track, status):
+        title = track["title"] if track else ""
+        artist = track["artist"] if track else ""
+        self.track_info_label.config(text=f"Название песни: {title}\nИсполнитель песни: {artist}\nПараметры: {status}")
+
+    def _on_progress_setup(self, max_val):
+        self.progress_slider.config(to=max_val)
+        self.progress_var.set(0)
+
+    def _on_slider_release(self, _event):
+        self.player.is_seeking = False
+        self.player.seek_to(self.progress_var.get())
+
+    def _on_volume_change(self, val):
+        try:
+            self.player.set_volume(float(val))
+        except Exception:
+            pass
+
+    def _on_toggle_loop(self):
+        state_str = self.player.toggle_loop()
+        self.loop_btn.set_loop_state(state_str)
+
+    def stop_if_in_dir(self, directory):
+        if self.player.is_playing and self.player.current_track_path:
+            pl_dir = os.path.abspath(directory)
+            if os.path.abspath(self.player.current_track_path).startswith(pl_dir + os.sep):
+                self.player.stop_track()
+
+    def stop_if_file(self, filepath):
+        if self.player.current_track_path and os.path.abspath(self.player.current_track_path) == os.path.abspath(filepath):
+            self.player.stop_track()
+
+    def tick(self):
+        self.player.tick()
+
+    def shutdown(self):
+        self.player.shutdown()

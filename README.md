@@ -25,7 +25,7 @@
 
 ### 1. Клонируйте репозиторий
 ```bash
-git clone https://github.com
+git clone https://github.com/Defektiv20001000/Python_MoozHunt
 cd Python_MoozHunt
 ```
 

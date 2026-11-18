@@ -4,9 +4,12 @@ ffmpeg.exe
 ffprobe.exe
 
 # Пользовательские данные и временные папки
+plays/
 songs/
 songs_temporary/
-deleated
+deleated/
+app_settings.json
+bad_songs.json
 
 # Системный мусор и кэш Python
 __pycache__/

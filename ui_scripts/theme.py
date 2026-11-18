@@ -1,0 +1,253 @@
+import tkinter as tk
+from tkinter import ttk
+
+RANDOM_SONGS_COUNT = 20
+SEARCH_DELAY_MS = 150
+DOWNLOAD_POLL_MS = 400
+GENRE_PLACEHOLDER = "Жанр на выбор"
+TOP_LOGO_SIZE = 50
+REPORT_API_URL = "https://example.com"
+
+BG_MAIN, BG_PANEL, BG_HEADER, BG_HOVER = "#2b2b2b", "#333333", "#3c3f41", "#45494a"
+ACCENT_BLUE, ACCENT_HOVER = "#1f6aa5", "#144870"
+TEXT_MAIN, TEXT_MUTED, BORDER_COLOR = "#ffffff", "#aaaaaa", "#444444"
+
+
+def setup_styles(root, scale_fn):
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("Treeview", background=BG_MAIN, foreground=TEXT_MAIN, fieldbackground=BG_MAIN,
+                    rowheight=scale_fn(28), borderwidth=0, font=("Segoe UI", 9))
+    style.map("Treeview", background=[("selected", ACCENT_BLUE)], foreground=[("selected", TEXT_MAIN)])
+    style.configure("Treeview.Heading", background=BG_HEADER, foreground=TEXT_MAIN, relief="flat",
+                    borderwidth=0, font=("Segoe UI", 9, "bold"), padding=(scale_fn(6), scale_fn(5)))
+    style.map("Treeview.Heading", background=[("active", BG_HOVER)])
+    style.configure("Vertical.TScrollbar", background=BG_HEADER, troughcolor=BG_MAIN, borderwidth=0, arrowcolor=TEXT_MUTED)
+    style.map("Vertical.TScrollbar", background=[("active", BG_HOVER)])
+    style.configure("TCombobox", fieldbackground=BG_PANEL, background=BG_HEADER, foreground=TEXT_MAIN,
+                    arrowcolor=TEXT_MAIN, borderwidth=1, relief="flat")
+    style.map("TCombobox", fieldbackground=[("readonly", BG_PANEL)],
+              selectbackground=[("readonly", BG_PANEL)], selectforeground=[("readonly", TEXT_MAIN)])
+    for opt, val in (("background", BG_PANEL), ("foreground", TEXT_MAIN),
+                     ("selectBackground", ACCENT_BLUE), ("selectForeground", TEXT_MAIN)):
+        root.option_add(f"*TCombobox*Listbox.{opt}", val)
+    style.configure("TScale", background=BG_PANEL, troughcolor="#1e1e1e", sliderthickness=scale_fn(14))
+
+
+class AimpIconButton(tk.Canvas):
+    """Векторная кнопка управления в стиле AIMP."""
+    def __init__(self, parent, kind, command, scale_fn, size=34, bg=BG_PANEL):
+        px = scale_fn(size)
+        super().__init__(
+            parent, width=px, height=px, bg=bg,
+            highlightthickness=0, bd=0, cursor="hand2"
+        )
+        self.kind = kind
+        self.command = command
+        self.px = px
+        self.scale_fn = scale_fn
+        self.is_playing = False
+        self.loop_state = "off"  # "off", "all", "one"
+        self.hovered = False
+        self.pressed = False
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.draw()
+
+    def _on_enter(self, _e):
+        self.hovered = True
+        self.draw()
+
+    def _on_leave(self, _e):
+        self.hovered = False
+        self.pressed = False
+        self.draw()
+
+    def _on_press(self, _e):
+        self.pressed = True
+        self.draw()
+
+    def _on_release(self, event):
+        was_pressed = self.pressed
+        self.pressed = False
+        self.draw()
+        if was_pressed and 0 <= event.x <= self.px and 0 <= event.y <= self.px:
+            if self.command:
+                self.command()
+
+    def set_playing(self, playing):
+        self.is_playing = bool(playing)
+        self.draw()
+
+    def set_loop_state(self, state_str):
+        """Определяет состояние повтора по возвращаемой строке из player.toggle_loop()."""
+        s = str(state_str).strip().lower()
+        if "1" in s or "one" in s or "трек" in s or "один" in s:
+            self.loop_state = "one"
+        elif any(ch.isalnum() for ch in s) and s not in ("off", "нет", "выкл", "none"):
+            self.loop_state = "all"
+        else:
+            self.loop_state = "off"
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        c = self.px / 2.0
+        offset = 1 if self.pressed else 0
+
+        if self.kind == "play":
+            r = self.px * 0.43
+            fill_bg = "#3b8eed" if self.hovered else ACCENT_BLUE
+            if self.pressed:
+                fill_bg = "#1f6bc4"
+            self.create_oval(
+                c - r, c - r + offset, c + r, c + r + offset,
+                fill=fill_bg, outline="#5ba4fc" if self.hovered else "", width=1
+            )
+            fg = "#ffffff"
+            if self.is_playing:
+                bw = max(2, self.px * 0.08)
+                bh = self.px * 0.34
+                gap = self.px * 0.07
+                self.create_rectangle(c - gap - bw, c - bh / 2 + offset, c - gap, c + bh / 2 + offset, fill=fg, outline="")
+                self.create_rectangle(c + gap, c - bh / 2 + offset, c + gap + bw, c + bh / 2 + offset, fill=fg, outline="")
+            else:
+                s = self.px * 0.19
+                shift = self.px * 0.03
+                self.create_polygon(
+                    c - s * 0.75 + shift, c - s + offset,
+                    c - s * 0.75 + shift, c + s + offset,
+                    c + s * 1.05 + shift, c + offset,
+                    fill=fg, outline=""
+                )
+            return
+
+        if self.hovered:
+            r_bg = self.px * 0.42
+            self.create_oval(
+                c - r_bg, c - r_bg, c + r_bg, c + r_bg,
+                fill="#2d323b" if not self.pressed else "#22262d", outline=""
+            )
+
+        fg = "#ffffff" if self.hovered else "#cfd6e0"
+
+        if self.kind == "prev":
+            s = self.px * 0.16
+            bar_w = max(2, self.px * 0.065)
+            x_bar = c - s - bar_w * 0.5
+            self.create_rectangle(x_bar, c - s + offset, x_bar + bar_w, c + s + offset, fill=fg, outline="")
+            self.create_polygon(
+                c + s, c - s + offset,
+                c + s, c + s + offset,
+                c - s * 0.35, c + offset,
+                fill=fg, outline=""
+            )
+        elif self.kind == "next":
+            s = self.px * 0.16
+            bar_w = max(2, self.px * 0.065)
+            x_bar = c + s - bar_w * 0.5
+            self.create_rectangle(x_bar, c - s + offset, x_bar + bar_w, c + s + offset, fill=fg, outline="")
+            self.create_polygon(
+                c - s, c - s + offset,
+                c - s, c + s + offset,
+                c + s * 0.35, c + offset,
+                fill=fg, outline=""
+            )
+        elif self.kind == "stop":
+            s = self.px * 0.15
+            self.create_rectangle(c - s, c - s + offset, c + s, c + s + offset, fill=fg, outline="")
+        elif self.kind == "loop":
+            # Векторная иконка повтора в стиле AIMP (замкнутый контур со стрелками + цифра 1 при повторе одного трека)
+            if self.loop_state == "off":
+                loop_fg = "#8b949e" if not self.hovered else "#cfd6e0"
+            else:
+                loop_fg = "#5ba4fc" if self.hovered else ACCENT_BLUE
+
+            w = self.px * 0.24
+            h = self.px * 0.17
+            lw = max(1.6, self.px * 0.055)
+            arr = self.px * 0.085
+
+            x1, y1 = c - w, c - h + offset
+            x2, y2 = c + w, c + h + offset
+
+            # Верхняя и левая дуги (идут к стрелке вверху справа)
+            self.create_line(x1, c + h * 0.15 + offset, x1, y1, x2 - arr * 0.4, y1, fill=loop_fg, width=lw)
+            self.create_polygon(
+                x2 + arr * 0.4, y1,
+                x2 - arr * 0.7, y1 - arr * 0.75,
+                x2 - arr * 0.7, y1 + arr * 0.75,
+                fill=loop_fg, outline=""
+            )
+
+            # Нижняя и правая дуги (идут к стрелке внизу слева)
+            self.create_line(x2, c - h * 0.15 + offset, x2, y2, x1 + arr * 0.4, y2, fill=loop_fg, width=lw)
+            self.create_polygon(
+                x1 - arr * 0.4, y2,
+                x1 + arr * 0.7, y2 - arr * 0.75,
+                x1 + arr * 0.7, y2 + arr * 0.75,
+                fill=loop_fg, outline=""
+            )
+
+            if self.loop_state == "one":
+                font_sz = max(7, int(round(self.px * 0.22)))
+                self.create_text(c - 1, c + offset - 1, text="1", fill=loop_fg, font=("Segoe UI", font_sz, "bold"))
+        elif self.kind == "edit":
+            # Аккуратная векторная иконка карандаша без искажений системного шрифта
+            s = self.px * 0.20
+            lw = max(1.5, self.px * 0.055)
+            # Корпус карандаша по диагонали
+            self.create_line(
+                c - s * 0.75, c + s * 0.75 + offset,
+                c + s * 0.55, c - s * 0.55 + offset,
+                fill=fg, width=lw * 1.6
+            )
+            # Ластик сверху справа
+            self.create_line(
+                c + s * 0.65, c - s * 0.65 + offset,
+                c + s * 0.90, c - s * 0.90 + offset,
+                fill=fg, width=lw * 1.6
+            )
+            # Острый кончик снизу слева
+            self.create_polygon(
+                c - s * 0.98, c + s * 0.98 + offset,
+                c - s * 0.92, c + s * 0.48 + offset,
+                c - s * 0.48, c + s * 0.92 + offset,
+                fill=fg, outline=""
+            )
+
+
+def make_button(parent, text, command, scale_fn, accent=False, width=None):
+    btn = tk.Button(
+        parent, text=text, command=command, bg=ACCENT_BLUE if accent else BG_HEADER, fg=TEXT_MAIN,
+        activebackground=ACCENT_HOVER if accent else BG_HOVER, activeforeground=TEXT_MAIN,
+        relief="flat", bd=0, font=("Segoe UI", 9, "bold" if accent else "normal"),
+        cursor="hand2", padx=scale_fn(8), pady=scale_fn(5)
+    )
+    if width:
+        btn.config(width=width)
+    return btn
+
+
+def make_section_frame(parent, title, scale_fn):
+    outer = tk.Frame(parent, bg=BG_MAIN, highlightbackground=BORDER_COLOR, highlightthickness=1)
+    tk.Label(outer, text=title, bg=BG_HEADER, fg=TEXT_MAIN, font=("Segoe UI", 9, "bold"),
+             anchor="w", padx=scale_fn(8), pady=scale_fn(5)).pack(fill=tk.X)
+    return outer
+
+
+def create_scrollbar_tree(parent, columns, scale_fn):
+    frame = tk.Frame(parent, bg=BG_MAIN)
+    frame.pack(fill=tk.BOTH, expand=True)
+    sb = ttk.Scrollbar(frame)
+    sb.pack(side=tk.RIGHT, fill=tk.Y)
+    tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="headings", yscrollcommand=sb.set)
+    for name, width in columns:
+        tree.heading(name, text=name, anchor="w")
+    tree.column(name, width=width, minwidth=scale_fn(45), anchor="w")
+    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb.config(command=tree.yview)
+    return tree
