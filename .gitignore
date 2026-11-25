@@ -1,18 +1,15 @@
-# Тяжелые модели и бинарники
-clap-ai/
-ffmpeg.exe
-ffprobe.exe
+# Папки с нейронкой, песнями и временными файлами
+DataBaseLoad/clap-ai/
+DataBaseLoad/songs/
+Application/plays/
+Application/songs_temporary/
 
-# Пользовательские данные и временные папки
-plays/
-songs/
-songs_temporary/
-deleated/
-app_settings.json
-bad_songs.json
+# Тяжелые исполняемые файлы и базы данных
+*.exe
+*.db
 
-# Системный мусор и кэш Python
+# Кэш Python и виртуальные окружения (на всякий случай)
 __pycache__/
-*.py[cod]
+*.pyc
 venv/
 .venv/

@@ -1,0 +1,201 @@
+import os
+import sqlite3
+import shutil
+import json
+import time
+from google import genai
+from google.genai import types
+from pydantic import BaseModel
+
+# ==========================================
+# НАСТРОЙКИ
+# ==========================================
+API_KEY = "Ключ"
+DB_FILE = "music_vault.db"
+OUTPUT_DB = "songs_cleaned.db"
+BATCH_SIZE = 50
+
+MODELS_TO_TRY = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash"
+]
+# ==========================================
+
+# Если выходная база еще не создана — копируем исходную и добавляем колонку прогресса
+is_fresh_start = not os.path.exists(OUTPUT_DB)
+if is_fresh_start:
+    shutil.copyfile(DB_FILE, OUTPUT_DB)
+
+conn = sqlite3.connect(OUTPUT_DB)
+cursor = conn.cursor()
+
+if is_fresh_start:
+    # Добавляем служебную колонку, чтобы знать, какие строки уже обработаны
+    cursor.execute("ALTER TABLE songs ADD COLUMN ai_processed INTEGER DEFAULT 0")
+    
+    # Шаг 1: Удаляем дубликаты по ссылке
+    cursor.execute("""
+        DELETE FROM songs
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM songs
+            GROUP BY link
+        ) AND link IS NOT NULL AND link != ''
+    """)
+    link_dups = cursor.rowcount
+    conn.commit()
+    print(f"Создана новая база. Удалено дублей по ссылкам: {link_dups}")
+else:
+    print(f"Найдена существующая база '{OUTPUT_DB}'. Продолжаем с места остановки...")
+
+# Берем только еще НЕ обработанные записи
+cursor.execute("SELECT id, artist, title FROM songs WHERE ai_processed = 0")
+rows = cursor.fetchall()
+print(f"Осталось записей для обработки ИИ: {len(rows)}")
+
+# Клиент с жестким таймаутом 60 секунд, чтобы скрипт не зависал намертво
+client = genai.Client(
+    api_key=API_KEY,
+    http_options=types.HttpOptions(timeout=60000)
+)
+
+class SongItem(BaseModel):
+    id: int
+    is_song: bool
+    artist: str
+    title: str
+
+class SongBatch(BaseModel):
+    songs: list[SongItem]
+
+system_prompt = """
+Ты музыкальный редактор. Твоя задача — очистить базу музыкальных треков из YouTube.
+Для каждой записи сделай следующее:
+
+1. Проверка на музыку (поле is_song):
+   - Поставь is_song = false, если это НЕ музыкальный трек (например: реакции "Reacts to", топы "Top 10", интервью, обзоры, подкасты, мешапы/мемы, видео о создании музыки, лайв-стримы 24/7, туториалы).
+   - Поставь is_song = true, если это песня, саундтрек, инструментал, кавер или ремикс.
+
+2. Очистка от мусора и каналов YouTube:
+   - Удали из artist и title весь YouTube-мусор: (Official Video), [Official Audio], HD, 4K, Lyrics, текст песни, хэштеги (#viral и т.д.), названия лейблов и каналов (например, "Fueled By Ramen", "Asthmatic Kitty Records", "Topic", "Archive", "Official").
+   - Удали слово "Minecraft" (в любом регистре) ИЗ ПОЛЯ artist. Если в artist было только "Minecraft", оставь поле пустым. В поле title слово "Minecraft" ОСТАВЬ, не удаляй его.
+
+3. Разделение и исправление колонок:
+   - Если в поле artist записаны сразу и исполнитель, и название песни (например, "Deftones - Change" или "Modern Talking - Cheri Cheri Lady"), раздели их: исполнителя в artist, название трека в title.
+   - Если в title продублировано имя исполнителя — убери его, оставив только название трека.
+   - Сохрани оригинальный id для каждой строки.
+"""
+
+for start in range(0, len(rows), BATCH_SIZE):
+    batch = rows[start:start + BATCH_SIZE]
+    records_to_send = [{"id": r[0], "artist": r[1] or "", "title": r[2] or ""} for r in batch]
+
+    success = False
+    attempt = 0
+    
+    while not success and attempt < 15:
+        current_model = MODELS_TO_TRY[attempt % len(MODELS_TO_TRY)]
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=json.dumps(records_to_send, ensure_ascii=False),
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=SongBatch,
+                    temperature=0.1,
+                ),
+            )
+            result = json.loads(response.text)
+            
+            ids_to_delete = []
+            updates = []
+            processed_ids = []
+
+            for item in result.get('songs', []):
+                row_id = item['id']
+                if not item['is_song']:
+                    ids_to_delete.append((row_id,))
+                else:
+                    clean_artist = item['artist'].replace('Minecraft', '').replace('minecraft', '').strip(' -–—|,')
+                    clean_title = item['title'].strip(' -–—|')
+                    updates.append((clean_artist, clean_title, row_id))
+                    processed_ids.append((row_id,))
+
+            # На случай, если модель пропустила какой-то ID в ответе, помечаем весь отправленный батч как обработанный
+            all_batch_ids = [(r[0],) for r in batch]
+
+            # Сразу сохраняем изменения этого батча в БД
+            if ids_to_delete:
+                cursor.executemany("DELETE FROM songs WHERE id = ?", ids_to_delete)
+            if updates:
+                cursor.executemany("UPDATE songs SET artist = ?, title = ? WHERE id = ?", updates)
+            cursor.executemany("UPDATE songs SET ai_processed = 1 WHERE id = ?", all_batch_ids)
+            conn.commit()
+
+            print(f"[{current_model}] Обработано: {min(start + BATCH_SIZE, len(rows))} из {len(rows)}")
+            success = True
+            time.sleep(2.5)  # Небольшая пауза, чтобы не упереться в лимит запросов в минуту (RPM)
+
+        except Exception as e:
+            attempt += 1
+            err_msg = str(e).splitlines()[0][:100]  # Берем только первую строку ошибки для чистоты лога
+            # Если перебрали весь круг моделей — делаем паузу подольше (15 сек), иначе переключаемся почти сразу (2 сек)
+            wait_time = 15 if (attempt % len(MODELS_TO_TRY) == 0) else 2
+            print(f"Сбой ({current_model}): {err_msg} -> следующая модель через {wait_time} сек...")
+            time.sleep(wait_time)
+
+    if not success:
+        print(f"\n⚠️ Не удалось обработать батч (строки {start}–{start+BATCH_SIZE}) после 15 попыток.")
+        print("Вероятно, исчерпана дневная квота API. Прогресс сохранен — просто перезапустите скрипт позже!")
+        conn.close()
+        exit(1)
+
+# Проверяем, не осталось ли необработанных строк
+cursor.execute("SELECT COUNT(*) FROM songs WHERE ai_processed = 0")
+remaining = cursor.fetchone()[0]
+
+if remaining == 0:
+    print("\nВсе записи обработаны! Запускаю финальную очистку дубликатов...")
+    
+    # Удаляем дубликаты по связке (artist + title)
+    cursor.execute("SELECT id, artist, title FROM songs ORDER BY id ASC")
+    clean_rows = cursor.fetchall()
+
+    seen = set()
+    dup_ids = []
+
+    for row_id, artist, title in clean_rows:
+        norm_a = " ".join((artist or "").lower().split())
+        norm_t = " ".join((title or "").lower().split())
+
+        if not norm_a and not norm_t:
+            dup_ids.append((row_id,))
+            continue
+
+        key = (norm_a, norm_t)
+        if key in seen:
+            dup_ids.append((row_id,))
+        else:
+            seen.add(key)
+
+    cursor.executemany("DELETE FROM songs WHERE id = ?", dup_ids)
+    
+    # Удаляем временную колонку ai_processed (поддерживается в SQLite 3.35+)
+    try:
+        cursor.execute("ALTER TABLE songs DROP COLUMN ai_processed")
+    except sqlite3.OperationalError:
+        pass  # Если версия SQLite старая, колонку можно просто оставить
+
+    conn.commit()
+    cursor.execute("VACUUM")
+    cursor.execute("SELECT COUNT(*) FROM songs")
+    final_count = cursor.fetchone()[0]
+    conn.close()
+
+    print(f"Удалено дубликатов по названию и автору: {len(dup_ids)}")
+    print(f"ГОТОВО! Итоговое количество чистых уникальных песен в базе: {final_count}")
+    print(f"Скачайте готовую базу '{OUTPUT_DB}'.")

@@ -1,5 +1,7 @@
+import math
 import tkinter as tk
 from tkinter import ttk
+from PIL import Image, ImageDraw, ImageTk
 
 RANDOM_SONGS_COUNT = 20
 SEARCH_DELAY_MS = 150
@@ -251,3 +253,87 @@ def create_scrollbar_tree(parent, columns, scale_fn):
     tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     sb.config(command=tree.yview)
     return tree
+
+
+class CassetteWidget(tk.Label):
+    """Гладкая векторная аудиокассета с суперсэмплингом (антиалиасингом)."""
+    def __init__(self, parent, scale_fn, width=116, height=68, bg=BG_PANEL):
+        w, h = scale_fn(width), scale_fn(height)
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0)
+        self.w = w
+        self.h = h
+        self.bg = bg
+        self.angle = 0.0
+        self.is_playing = False
+        self._job = None
+        self._photo = None
+        self.draw()
+
+    def set_playing(self, playing):
+        playing = bool(playing)
+        if self.is_playing == playing:
+            return
+        self.is_playing = playing
+        if self.is_playing:
+            self._animate()
+        elif self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+
+    def _animate(self):
+        if not self.is_playing:
+            self._job = None
+            return
+        self.angle = (self.angle + 8.0) % 360.0
+        self.draw()
+        self._job = self.after(45, self._animate)
+
+    def draw(self):
+        ss = 4  # Множитель сглаживания (рисуем в 4x разрешении)
+        W, H = self.w * ss, self.h * ss
+        img = Image.new("RGBA", (W, H), self.bg)
+        d = ImageDraw.Draw(img)
+
+        pad = 3 * ss
+        # Скруглённый корпус кассеты
+        d.rounded_rectangle([pad, pad, W - pad, H - pad], radius=5 * ss, fill="#22252a", outline="#555b65", width=ss)
+        # Верхняя этикетка
+        d.rounded_rectangle([pad + 5 * ss, pad + 4 * ss, W - pad - 5 * ss, int(H * 0.30)], radius=2 * ss, fill=ACCENT_BLUE)
+        # Окошко для плёнки
+        wx1, wy1 = int(W * 0.16), int(H * 0.36)
+        wx2, wy2 = int(W * 0.84), int(H * 0.72)
+        d.rounded_rectangle([wx1, wy1, wx2, wy2], radius=3 * ss, fill="#16181c", outline="#444952", width=ss)
+
+        cy = (wy1 + wy2) / 2.0
+        reels = [(W * 0.33, 0.96), (W * 0.67, 0.82)]
+        r_tape = (wy2 - wy1) * 0.43
+        r_hub = r_tape * 0.50
+
+        for cx, tape_scale in reels:
+            rt = r_tape * tape_scale
+            # Рулон плёнки
+            d.ellipse([cx - rt, cy - rt, cx + rt, cy + rt], fill="#3b2f2f", outline="#281e1e", width=ss)
+            # Светлый сердечник
+            d.ellipse([cx - r_hub, cy - r_hub, cx + r_hub, cy + r_hub], fill="#cfd6e0", outline="#8b949e", width=ss)
+            # 6 аккуратных зубцов катушки
+            for i in range(6):
+                rad = math.radians(self.angle + i * 60.0)
+                x1 = cx + math.cos(rad) * (r_hub * 0.42)
+                y1 = cy + math.sin(rad) * (r_hub * 0.42)
+                x2 = cx + math.cos(rad) * (r_hub * 0.86)
+                y2 = cy + math.sin(rad) * (r_hub * 0.86)
+                d.line([x1, y1, x2, y2], fill="#22252a", width=max(2, int(1.6 * ss)))
+            # Центральное отверстие
+            r_in = r_hub * 0.36
+            d.ellipse([cx - r_in, cy - r_in, cx + r_in, cy + r_in], fill="#16181c")
+
+        # Нижний блок магнитной головки
+        d.polygon(
+            [(W * 0.24, H - pad), (W * 0.30, H * 0.78), (W * 0.70, H * 0.78), (W * 0.76, H - pad)],
+            fill="#2c3038", outline="#555b65"
+        )
+
+        # Уменьшаем с идеальным сглаживанием
+        smooth_img = img.resize((self.w, self.h), Image.Resampling.LANCZOS)
+        self._photo = ImageTk.PhotoImage(smooth_img)
+        self.config(image=self._photo)

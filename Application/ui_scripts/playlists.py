@@ -1,9 +1,13 @@
-import hashlib, json, os, random, re, shutil, threading
+import hashlib, json, os, random, re, shutil, threading, sys
 from urllib.parse import urlparse
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = os.path.dirname(sys.executable)
+else:
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = os.path.join(PROJECT_ROOT, "plays")
 os.makedirs(BASE_DIR, exist_ok=True)
+
 MANIFEST_NAME = "playlist.json"
 MAX_PARALLEL_DOWNLOADS = 2
 DOWNLOAD_TIMEOUT = 30

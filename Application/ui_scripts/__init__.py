@@ -1,4 +1,7 @@
 from . import playlists
+from .app_actions import AppActionsMixin
+from .app_playback import PlaybackHighlightMixin
+from .app_trees import TreeMixin
 from .dialogs import (
     open_bad_songs_dialog,
     open_create_playlist_dialog,

@@ -29,7 +29,3 @@ def get_audio_embedding(file_path):
     except Exception as e:
         print(f"Ошибка при обработке файла {file_path}: {e}")
         return None
-
-
-def analyze_playlist(file_path):
-    return 0

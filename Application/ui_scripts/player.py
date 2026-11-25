@@ -4,8 +4,10 @@ from tkinter import ttk
 
 from . import playlists
 from .theme import (
-    ACCENT_BLUE, AimpIconButton, BG_PANEL, TEXT_MAIN, TEXT_MUTED, make_section_frame
+    ACCENT_BLUE, AimpIconButton, BG_PANEL, CassetteWidget,
+    TEXT_MAIN, TEXT_MUTED, make_section_frame
 )
+
 
 class AudioPlayer:
     def __init__(self, root, temp_dir, on_status, on_play_state, on_progress_setup, on_progress_tick):
@@ -207,12 +209,17 @@ class PlayerPanel:
         self.frame.configure(bg=BG_PANEL)
         self.frame.pack(fill=tk.X, side=tk.BOTTOM)
 
+        info_box = tk.Frame(self.frame, bg=BG_PANEL)
+        info_box.pack(fill=tk.X, padx=scale_fn(8), pady=scale_fn(6))
+
         self.track_info_label = tk.Label(
-            self.frame, text="Название песни:\nИсполнитель песни:\nПараметры: Выберите трек",
-            bg=BG_PANEL, fg=TEXT_MAIN, justify=tk.LEFT, anchor="w", font=("Segoe UI", 9),
-            padx=scale_fn(8), pady=scale_fn(6)
+            info_box, text="Название:\nИсполнитель:\nВыберите трек",
+            bg=BG_PANEL, fg=TEXT_MAIN, justify=tk.LEFT, anchor="w", font=("Segoe UI", 9)
         )
-        self.track_info_label.pack(fill=tk.X)
+        self.track_info_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.cassette = CassetteWidget(info_box, scale_fn, width=116, height=68, bg=BG_PANEL)
+        self.cassette.pack(side=tk.RIGHT, padx=(scale_fn(8), 0))
 
         self.progress_slider = ttk.Scale(self.frame, from_=0, to=100, variable=self.progress_var)
         self.progress_slider.pack(fill=tk.X, padx=scale_fn(8), pady=scale_fn(4))
@@ -252,16 +259,20 @@ class PlayerPanel:
             root=root,
             temp_dir=temp_dir,
             on_status=self._on_player_status,
-            on_play_state=self.play_btn.set_playing,
+            on_play_state=self._on_play_state_changed,
             on_progress_setup=self._on_progress_setup,
             on_progress_tick=self.progress_var.set,
         )
         self.player.set_volume(initial_volume)
 
+    def _on_play_state_changed(self, playing):
+        self.play_btn.set_playing(playing)
+        self.cassette.set_playing(playing)
+
     def _on_player_status(self, track, status):
         title = track["title"] if track else ""
         artist = track["artist"] if track else ""
-        self.track_info_label.config(text=f"Название песни: {title}\nИсполнитель песни: {artist}\nПараметры: {status}")
+        self.track_info_label.config(text=f"Название: {title}\nИсполнитель: {artist}\n{status}")
 
     def _on_progress_setup(self, max_val):
         self.progress_slider.config(to=max_val)
