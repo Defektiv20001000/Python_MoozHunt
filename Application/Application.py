@@ -1,6 +1,7 @@
-import os, queue, sys
+import os, queue, sys, threading
 import tkinter as tk
 from tkinter import ttk
+import numpy as np
 
 import DataBase
 from ui_scripts import (
@@ -16,6 +17,106 @@ def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
+
+
+class AudioVisualizer(tk.Canvas):
+    def __init__(self, parent, scale_fn, bars=12, width=56, height=24, **kwargs):
+        super().__init__(parent, width=width, height=height, highlightthickness=0, bd=0, **kwargs)
+        self.s = scale_fn
+        self.bars_count = bars
+        self.w = width
+        self.h = height
+        self.levels = np.zeros(bars)
+        self.active = False
+        self._running = True
+
+        self.bar_ids = []
+        gap = max(1, self.s(2))
+        bar_w = max(2, (self.w - gap * (bars - 1)) // bars)
+        total_w = bars * bar_w + (bars - 1) * gap
+        start_x = (self.w - total_w) // 2
+
+        for i in range(bars):
+            x0 = start_x + i * (bar_w + gap)
+            x1 = x0 + bar_w
+            mid_y = self.h // 2
+            bar = self.create_rectangle(x0, mid_y - 1, x1, mid_y + 1, fill=ACCENT_BLUE, outline="")
+            self.bar_ids.append((bar, x0, x1))
+
+        threading.Thread(target=self._audio_loop, daemon=True).start()
+        self._animate()
+
+    def set_active(self, is_playing: bool):
+        self.active = is_playing
+
+    def destroy(self):
+        self._running = False
+        super().destroy()
+
+    def _audio_loop(self):
+        try:
+            import pyaudiowpatch as pyaudio
+        except ImportError:
+            return
+
+        p = pyaudio.PyAudio()
+        try:
+            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            if not default_speakers["isLoopbackDevice"]:
+                for loopback in p.get_loopback_device_info_generator():
+                    if default_speakers["name"] in loopback["name"]:
+                        default_speakers = loopback
+                        break
+
+            rate = int(default_speakers["defaultSampleRate"])
+            channels = default_speakers["maxInputChannels"]
+            chunk = 1024
+
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=rate,
+                frames_per_buffer=chunk,
+                input=True,
+                input_device_index=default_speakers["index"]
+            )
+
+            while self._running:
+                data = stream.read(chunk, exception_on_overflow=False)
+                if not self.active:
+                    self.levels *= 0.7
+                    continue
+
+                samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                if channels > 1:
+                    samples = samples.reshape(-1, channels).mean(axis=1)
+
+                fft = np.abs(np.fft.rfft(samples * np.hanning(len(samples))))
+                fft = fft[2:len(fft) // 3]
+                chunks = np.array_split(fft, self.bars_count)
+                new_levels = np.array([np.mean(c) for c in chunks])
+
+                new_levels = np.clip(new_levels / 18000.0, 0.0, 1.0)
+                self.levels = np.maximum(new_levels, self.levels * 0.75)
+
+            stream.stop_stream()
+            stream.close()
+        except Exception:
+            pass
+        finally:
+            p.terminate()
+
+    def _animate(self):
+        if not self._running:
+            return
+        mid_y = self.h / 2
+        for i, (bar_id, x0, x1) in enumerate(self.bar_ids):
+            lvl = self.levels[i] if self.active else self.levels[i] * 0.8
+            half_h = max(1.5, lvl * (self.h / 2 - 2))
+            self.coords(bar_id, x0, mid_y - half_h, x1, mid_y + half_h)
+
+        self.after(33, self._animate)
 
 
 class MusicAppInterface(PlaybackHighlightMixin, TreeMixin, AppActionsMixin):
@@ -44,6 +145,7 @@ class MusicAppInterface(PlaybackHighlightMixin, TreeMixin, AppActionsMixin):
         self.mini_win = None
         self.mini_play_btn = None
         self.mini_title_lbl = None
+        self.mini_viz = None
 
         self.photo_icon = self.top_logo_img = None
         self._load_logos()
@@ -236,7 +338,7 @@ class MusicAppInterface(PlaybackHighlightMixin, TreeMixin, AppActionsMixin):
         self.mini_win.attributes("-topmost", True)
         self.mini_win.configure(bg=BG_HEADER, highlightbackground=ACCENT_BLUE, highlightthickness=1)
 
-        w, h = self.s(340), self.s(42)
+        w, h = self.s(380), self.s(42)
         x = self.s(8)
         y = self._get_work_area_bottom() - h - self.s(8)
         self.mini_win.geometry(f"{w}x{h}+{x}+{y}")
@@ -257,6 +359,11 @@ class MusicAppInterface(PlaybackHighlightMixin, TreeMixin, AppActionsMixin):
         restore_btn.configure(padx=self.s(7), pady=self.s(2))
         restore_btn.pack(side=tk.RIGHT, padx=(self.s(4), self.s(6)), pady=self.s(6))
 
+        self.mini_viz = AudioVisualizer(
+            self.mini_win, self.s, bars=12, width=self.s(56), height=self.s(24), bg=BG_HEADER
+        )
+        self.mini_viz.pack(side=tk.RIGHT, padx=(self.s(4), self.s(4)), pady=self.s(9))
+
         self.mini_title_lbl = tk.Label(
             self.mini_win, text=self._get_mini_track_title(),
             bg=BG_HEADER, fg=TEXT_MAIN, font=("Segoe UI", 9), anchor="w"
@@ -270,6 +377,7 @@ class MusicAppInterface(PlaybackHighlightMixin, TreeMixin, AppActionsMixin):
         self.mini_win = None
         self.mini_play_btn = None
         self.mini_title_lbl = None
+        self.mini_viz = None
         self.root.deiconify()
         self.root.state("normal")
         self.root.lift()
@@ -294,6 +402,8 @@ class MusicAppInterface(PlaybackHighlightMixin, TreeMixin, AppActionsMixin):
             is_actually_playing = bool(player.is_playing and not player.is_paused)
             if self.mini_play_btn.is_playing != is_actually_playing:
                 self.mini_play_btn.set_playing(is_actually_playing)
+            if self.mini_viz:
+                self.mini_viz.set_active(is_actually_playing)
 
     # -------------------------------------------------------------
 

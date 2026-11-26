@@ -1,4 +1,7 @@
 import math
+import os
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageDraw, ImageTk
@@ -162,7 +165,6 @@ class AimpIconButton(tk.Canvas):
             s = self.px * 0.15
             self.create_rectangle(c - s, c - s + offset, c + s, c + s + offset, fill=fg, outline="")
         elif self.kind == "loop":
-            # Векторная иконка повтора в стиле AIMP (замкнутый контур со стрелками + цифра 1 при повторе одного трека)
             if self.loop_state == "off":
                 loop_fg = "#8b949e" if not self.hovered else "#cfd6e0"
             else:
@@ -176,7 +178,6 @@ class AimpIconButton(tk.Canvas):
             x1, y1 = c - w, c - h + offset
             x2, y2 = c + w, c + h + offset
 
-            # Верхняя и левая дуги (идут к стрелке вверху справа)
             self.create_line(x1, c + h * 0.15 + offset, x1, y1, x2 - arr * 0.4, y1, fill=loop_fg, width=lw)
             self.create_polygon(
                 x2 + arr * 0.4, y1,
@@ -185,7 +186,6 @@ class AimpIconButton(tk.Canvas):
                 fill=loop_fg, outline=""
             )
 
-            # Нижняя и правая дуги (идут к стрелке внизу слева)
             self.create_line(x2, c - h * 0.15 + offset, x2, y2, x1 + arr * 0.4, y2, fill=loop_fg, width=lw)
             self.create_polygon(
                 x1 - arr * 0.4, y2,
@@ -198,22 +198,18 @@ class AimpIconButton(tk.Canvas):
                 font_sz = max(7, int(round(self.px * 0.22)))
                 self.create_text(c - 1, c + offset - 1, text="1", fill=loop_fg, font=("Segoe UI", font_sz, "bold"))
         elif self.kind == "edit":
-            # Аккуратная векторная иконка карандаша без искажений системного шрифта
             s = self.px * 0.20
             lw = max(1.5, self.px * 0.055)
-            # Корпус карандаша по диагонали
             self.create_line(
                 c - s * 0.75, c + s * 0.75 + offset,
                 c + s * 0.55, c - s * 0.55 + offset,
                 fill=fg, width=lw * 1.6
             )
-            # Ластик сверху справа
             self.create_line(
                 c + s * 0.65, c - s * 0.65 + offset,
                 c + s * 0.90, c - s * 0.90 + offset,
                 fill=fg, width=lw * 1.6
             )
-            # Острый кончик снизу слева
             self.create_polygon(
                 c - s * 0.98, c + s * 0.98 + offset,
                 c - s * 0.92, c + s * 0.48 + offset,
@@ -249,7 +245,7 @@ def create_scrollbar_tree(parent, columns, scale_fn):
     tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="headings", yscrollcommand=sb.set)
     for name, width in columns:
         tree.heading(name, text=name, anchor="w")
-    tree.column(name, width=width, minwidth=scale_fn(45), anchor="w")
+        tree.column(name, width=width, minwidth=scale_fn(45), anchor="w")
     tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     sb.config(command=tree.yview)
     return tree
@@ -289,17 +285,14 @@ class CassetteWidget(tk.Label):
         self._job = self.after(45, self._animate)
 
     def draw(self):
-        ss = 4  # Множитель сглаживания (рисуем в 4x разрешении)
+        ss = 4
         W, H = self.w * ss, self.h * ss
         img = Image.new("RGBA", (W, H), self.bg)
         d = ImageDraw.Draw(img)
 
         pad = 3 * ss
-        # Скруглённый корпус кассеты
         d.rounded_rectangle([pad, pad, W - pad, H - pad], radius=5 * ss, fill="#22252a", outline="#555b65", width=ss)
-        # Верхняя этикетка
         d.rounded_rectangle([pad + 5 * ss, pad + 4 * ss, W - pad - 5 * ss, int(H * 0.30)], radius=2 * ss, fill=ACCENT_BLUE)
-        # Окошко для плёнки
         wx1, wy1 = int(W * 0.16), int(H * 0.36)
         wx2, wy2 = int(W * 0.84), int(H * 0.72)
         d.rounded_rectangle([wx1, wy1, wx2, wy2], radius=3 * ss, fill="#16181c", outline="#444952", width=ss)
@@ -311,11 +304,8 @@ class CassetteWidget(tk.Label):
 
         for cx, tape_scale in reels:
             rt = r_tape * tape_scale
-            # Рулон плёнки
             d.ellipse([cx - rt, cy - rt, cx + rt, cy + rt], fill="#3b2f2f", outline="#281e1e", width=ss)
-            # Светлый сердечник
             d.ellipse([cx - r_hub, cy - r_hub, cx + r_hub, cy + r_hub], fill="#cfd6e0", outline="#8b949e", width=ss)
-            # 6 аккуратных зубцов катушки
             for i in range(6):
                 rad = math.radians(self.angle + i * 60.0)
                 x1 = cx + math.cos(rad) * (r_hub * 0.42)
@@ -323,17 +313,204 @@ class CassetteWidget(tk.Label):
                 x2 = cx + math.cos(rad) * (r_hub * 0.86)
                 y2 = cy + math.sin(rad) * (r_hub * 0.86)
                 d.line([x1, y1, x2, y2], fill="#22252a", width=max(2, int(1.6 * ss)))
-            # Центральное отверстие
             r_in = r_hub * 0.36
             d.ellipse([cx - r_in, cy - r_in, cx + r_in, cy + r_in], fill="#16181c")
 
-        # Нижний блок магнитной головки
         d.polygon(
             [(W * 0.24, H - pad), (W * 0.30, H * 0.78), (W * 0.70, H * 0.78), (W * 0.76, H - pad)],
             fill="#2c3038", outline="#555b65"
         )
 
-        # Уменьшаем с идеальным сглаживанием
+        smooth_img = img.resize((self.w, self.h), Image.Resampling.LANCZOS)
+        self._photo = ImageTk.PhotoImage(smooth_img)
+        self.config(image=self._photo)
+
+
+class AudioVisualizerWidget(tk.Label):
+    """Гладкий визуализатор звуковых волн в стиле AIMP со сглаживанием (суперсэмплинг)."""
+    def __init__(self, parent, scale_fn, bars=11, width=56, height=24, bg=BG_HEADER):
+        w, h = scale_fn(width), scale_fn(height)
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0)
+        self.w = w
+        self.h = h
+        self.bg = bg
+        self.bars_count = bars
+        self.levels = [0.06] * bars
+        self.target_levels = [0.06] * bars
+        self.is_playing = False
+        self._running = True
+        self._photo = None
+        self._has_loopback = False
+
+        self._cached_filepath = None
+        self._envelope = None
+        self._envelope_step = 0.05
+
+        threading.Thread(target=self._wasapi_loopback_worker, daemon=True).start()
+        self.draw()
+        self._animate()
+
+    def set_playing(self, playing):
+        self.is_playing = bool(playing)
+
+    def destroy(self):
+        self._running = False
+        super().destroy()
+
+    def _wasapi_loopback_worker(self):
+        try:
+            import numpy as np
+            import pyaudiowpatch as pyaudio
+        except ImportError:
+            return
+
+        p = pyaudio.PyAudio()
+        try:
+            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            if not default_speakers.get("isLoopbackDevice"):
+                for loopback in p.get_loopback_device_info_generator():
+                    if default_speakers["name"] in loopback["name"]:
+                        default_speakers = loopback
+                        break
+
+            rate = int(default_speakers["defaultSampleRate"])
+            channels = int(default_speakers["maxInputChannels"])
+            chunk = 1024
+
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=rate,
+                frames_per_buffer=chunk,
+                input=True,
+                input_device_index=default_speakers["index"],
+            )
+            self._has_loopback = True
+
+            while self._running:
+                data = stream.read(chunk, exception_on_overflow=False)
+                if not self.is_playing:
+                    self.target_levels = [0.06] * self.bars_count
+                    continue
+
+                samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                if channels > 1:
+                    samples = samples.reshape(-1, channels).mean(axis=1)
+
+                fft = np.abs(np.fft.rfft(samples * np.hanning(len(samples))))
+                fft = fft[2: max(self.bars_count + 3, len(fft) // 3)]
+                chunks = np.array_split(fft, self.bars_count)
+                raw = [float(np.mean(c)) / 16000.0 for c in chunks]
+                self.target_levels = [min(1.0, max(0.06, v)) for v in raw]
+
+            stream.stop_stream()
+            stream.close()
+        except Exception:
+            self._has_loopback = False
+        finally:
+            p.terminate()
+
+    def _load_file_envelope(self, filepath):
+        if filepath == self._cached_filepath:
+            return
+        self._cached_filepath = filepath
+        self._envelope = None
+        if not filepath or not os.path.exists(filepath):
+            return
+
+        def worker():
+            try:
+                import numpy as np
+                import pygame
+                snd = pygame.mixer.Sound(filepath)
+                arr = pygame.sndarray.array(snd)
+                if arr.ndim > 1:
+                    arr = arr.mean(axis=1)
+                init_info = pygame.mixer.get_init()
+                freq = init_info[0] if isinstance(init_info, tuple) else (init_info or 44100)
+                step_samples = max(1, int(freq * self._envelope_step))
+                usable = (len(arr) // step_samples) * step_samples
+                if usable <= 0:
+                    return
+                frames = np.abs(arr[:usable].reshape(-1, step_samples)).mean(axis=1)
+                peak = float(np.percentile(frames, 98)) or 1.0
+                self._envelope = np.clip(frames / peak, 0.08, 1.0).tolist()
+            except Exception:
+                self._envelope = None
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_from_player(self, player):
+        playing = bool(player.is_playing and not player.is_paused)
+        self.set_playing(playing)
+        if self._has_loopback:
+            return
+
+        if not playing:
+            self.target_levels = [0.06] * self.bars_count
+            return
+
+        self._load_file_envelope(player.current_track_path)
+        elapsed = player.paused_time + (time.time() - player.play_start_time)
+
+        energy = 0.55
+        if self._envelope:
+            idx = int(elapsed / self._envelope_step)
+            if 0 <= idx < len(self._envelope):
+                energy = self._envelope[idx]
+
+        center = (self.bars_count - 1) / 2.0
+        new_targets = []
+        for i in range(self.bars_count):
+            dist_factor = 1.0 - 0.35 * (abs(i - center) / max(1.0, center))
+            wave = 0.65 + 0.35 * math.sin(elapsed * (9.0 + i * 1.7) + i * 1.1)
+            val = energy * dist_factor * wave
+            new_targets.append(min(1.0, max(0.08, val)))
+        self.target_levels = new_targets
+
+    def _animate(self):
+        if not self._running:
+            return
+        changed = False
+        for i in range(self.bars_count):
+            target = self.target_levels[i] if self.is_playing else 0.06
+            cur = self.levels[i]
+            speed = 0.55 if target > cur else 0.25
+            nxt = cur + (target - cur) * speed
+            if abs(nxt - cur) > 0.004:
+                self.levels[i] = nxt
+                changed = True
+
+        if changed or self.is_playing:
+            self.draw()
+
+        self.after(35, self._animate)
+
+    def draw(self):
+        ss = 4
+        W, H = self.w * ss, self.h * ss
+        img = Image.new("RGBA", (W, H), self.bg)
+        d = ImageDraw.Draw(img)
+
+        gap = 2 * ss
+        bar_w = max(2 * ss, (W - gap * (self.bars_count - 1)) // self.bars_count)
+        total_w = self.bars_count * bar_w + (self.bars_count - 1) * gap
+        start_x = (W - total_w) // 2
+        cy = H / 2.0
+        max_half_h = (H / 2.0) - 2 * ss
+
+        for i, lvl in enumerate(self.levels):
+            x0 = start_x + i * (bar_w + gap)
+            x1 = x0 + bar_w
+            half_h = max(1.5 * ss, lvl * max_half_h)
+            color = "#4fa3f7" if (self.is_playing and lvl > 0.65) else (ACCENT_BLUE if self.is_playing else "#555b65")
+            d.rounded_rectangle(
+                [x0, cy - half_h, x1, cy + half_h],
+                radius=bar_w // 2,
+                fill=color,
+            )
+
         smooth_img = img.resize((self.w, self.h), Image.Resampling.LANCZOS)
         self._photo = ImageTk.PhotoImage(smooth_img)
         self.config(image=self._photo)

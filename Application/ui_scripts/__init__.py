@@ -13,6 +13,7 @@ from .playlists import AppStorage
 from .theme import (
     ACCENT_BLUE,
     AimpIconButton,
+    AudioVisualizerWidget,
     BG_HEADER,
     BG_MAIN,
     BG_PANEL,
